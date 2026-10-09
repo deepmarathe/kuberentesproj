@@ -1,0 +1,83 @@
+# Kustomize base: environment-agnostic manifests. Overlays (overlays/gke, overlays/local)
+# patch images, annotations and cloud-specific resources on top.
+#   Render:  kubectl kustomize k8s/overlays/gke
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+
+labels:
+  - pairs:
+      app.kubernetes.io/part-of: shopfleet
+    includeSelectors: false
+    includeTemplates: true
+
+resources:
+  - namespaces.yaml
+  - governance.yaml
+  - rbac.yaml
+  - networkpolicies.yaml
+  - crd-flashsale.yaml
+  - postgres.yaml
+  - redis.yaml
+  - catalog.yaml
+  - cart.yaml
+  - orders.yaml
+  - payment.yaml
+  - worker.yaml
+  - frontend.yaml
+  - auth.yaml
+  - notifications.yaml
+  - ops-api.yaml
+  - operator.yaml
+  - node-agent.yaml
+  - jobs.yaml
+  - loadgen.yaml
+
+configMapGenerator:
+  # Name gets a content hash suffix (shopfleet-config-7g9k2...). Changing a value creates a NEW
+  # ConfigMap and rewrites every reference, which triggers a rolling restart automatically.
+  - name: shopfleet-config
+    namespace: shopfleet
+    literals:
+      - DB_HOST=postgres
+      - DB_PORT=5432
+      - DB_NAME=shopfleet
+      - REDIS_HOST=redis
+      - REDIS_PORT=6379
+      - CATALOG_URL=http://catalog:8080
+      - CART_URL=http://cart:8080
+      - PAYMENT_URL=http://payment:8080
+      - ORDER_STREAM=orders
+      - LOG_LEVEL=INFO
+      - CACHE_TTL_SECONDS=30
+      - CHAOS_ENABLED=true
+      - PAYMENT_TIMEOUT_SECONDS=3
+      - FULFILL_SECONDS=2
+  # No hash suffix: payment reads this as a mounted FILE and hot-reloads it, no restart needed.
+  - name: payment-chaos
+    namespace: shopfleet
+    files:
+      - chaos.json=payment-chaos.json
+    options:
+      disableNameSuffixHash: true
+
+secretGenerator:
+  # Fine for a lab. For real systems use Secret Manager (docs/labs/11-secrets-and-config.md).
+  - name: postgres-credentials
+    namespace: shopfleet
+    literals:
+      - DB_USER=shop
+      - DB_PASSWORD=shopfleet-lab-password-change-me
+  # JWT signing key, mounted as a FILE into auth/catalog/orders/notifications/ops-api.
+  # No hash suffix: rotate it in place and watch the services pick it up without restarting.
+  - name: jwt-signing-key
+    namespace: shopfleet
+    literals:
+      - jwt-secret=lab-only-signing-key-rotate-me-0123456789abcdef
+    options:
+      disableNameSuffixHash: true
+  # The store's admin login (Admin + Cluster pages in the UI).
+  - name: admin-credentials
+    namespace: shopfleet
+    literals:
+      - email=admin@shopfleet.local
+      - password=ShopFleetAdmin123!

@@ -1,0 +1,8 @@
+# Used by envs/kubeadm-gce/install-app.sh (registry/tag/pull secret are passed with --set).
+ingress:
+  enabled: true
+  className: traefik
+imagePullSecrets:
+  - name: ar-cred                # created from a service-account key (CKAD: private registries)
+loadgen:
+  maxUsers: 10

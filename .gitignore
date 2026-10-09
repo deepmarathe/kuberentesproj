@@ -1,0 +1,9 @@
+**/node_modules/
+**/__pycache__/
+*.pyc
+.venv/
+terraform/.terraform/
+terraform/*.tfstate*
+terraform/terraform.tfvars
+terraform/.terraform.lock.hcl
+.last-tag

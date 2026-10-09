@@ -1,0 +1,23 @@
+# Lab 14: HTTPS with a Google-managed certificate + HTTP->HTTPS redirect.
+# Replace __DOMAIN__ (e.g. 34.120.1.2.nip.io or your real domain), apply, then annotate the Ingress:
+#   kubectl -n shopfleet annotate ingress shopfleet \
+#     networking.gke.io/managed-certificates=shopfleet-cert \
+#     networking.gke.io/v1beta1.FrontendConfig=shopfleet
+apiVersion: networking.gke.io/v1
+kind: ManagedCertificate
+metadata:
+  name: shopfleet-cert
+  namespace: shopfleet
+spec:
+  domains:
+    - __DOMAIN__
+---
+apiVersion: networking.gke.io/v1beta1
+kind: FrontendConfig
+metadata:
+  name: shopfleet
+  namespace: shopfleet
+spec:
+  redirectToHttps:
+    enabled: true
+    responseCodeName: MOVED_PERMANENTLY_DEFAULT

@@ -1,0 +1,29 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: shopfleet-config
+  labels: {{- include "shopfleet.labels" . | nindent 4 }}
+data:
+  DB_HOST: postgres
+  DB_PORT: "5432"
+  DB_NAME: shopfleet
+  REDIS_HOST: redis
+  REDIS_PORT: "6379"
+  CATALOG_URL: http://catalog:8080
+  CART_URL: http://cart:8080
+  PAYMENT_URL: http://payment:8080
+  ORDER_STREAM: orders
+  LOG_LEVEL: {{ .Values.config.logLevel | quote }}
+  CACHE_TTL_SECONDS: {{ .Values.config.cacheTtlSeconds | quote }}
+  CHAOS_ENABLED: {{ .Values.config.chaosEnabled | quote }}
+  PAYMENT_TIMEOUT_SECONDS: {{ .Values.config.paymentTimeoutSeconds | quote }}
+  FULFILL_SECONDS: {{ .Values.config.fulfillSeconds | quote }}
+  REPORT_BUCKET: {{ .Values.cronJobs.dailyReport.bucket | quote }}
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: payment-chaos
+  labels: {{- include "shopfleet.labels" . | nindent 4 }}
+data:
+  chaos.json: {{ toJson .Values.paymentChaos | quote }}

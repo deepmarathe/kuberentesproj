@@ -1,0 +1,88 @@
+# Lab 14: Gateway API -- the successor to Ingress. Same routing, plus weighted traffic
+# splitting (canary), header matching, cross-namespace routes, role separation.
+# Creates a SECOND load balancer with its own ephemeral IP:  kubectl -n shopfleet get gateway shopfleet
+apiVersion: gateway.networking.k8s.io/v1
+kind: Gateway
+metadata:
+  name: shopfleet
+  namespace: shopfleet
+spec:
+  gatewayClassName: gke-l7-global-external-managed
+  listeners:
+    - name: http
+      protocol: HTTP
+      port: 80
+---
+apiVersion: gateway.networking.k8s.io/v1
+kind: HTTPRoute
+metadata:
+  name: shopfleet
+  namespace: shopfleet
+spec:
+  parentRefs:
+    - name: shopfleet
+  rules:
+    - matches: [{ path: { type: PathPrefix, value: /api/catalog } }]
+      backendRefs:
+        - { name: catalog, port: 8080, weight: 100 }
+        # Canary (lab 04/14): apply extras/canary.yaml, then shift e.g. 90/10:
+        # - { name: catalog-canary, port: 8080, weight: 10 }
+    - matches: [{ path: { type: PathPrefix, value: /api/cart } }]
+      backendRefs: [{ name: cart, port: 8080 }]
+    - matches: [{ path: { type: PathPrefix, value: /api/orders } }]
+      backendRefs: [{ name: orders, port: 8080 }]
+    - backendRefs: [{ name: frontend, port: 8080 }]
+---
+# Gateway health checks default to "/" -- our APIs answer health on /readyz.
+apiVersion: networking.gke.io/v1
+kind: HealthCheckPolicy
+metadata:
+  name: api-readyz
+  namespace: shopfleet
+spec:
+  default:
+    config:
+      type: HTTP
+      httpHealthCheck:
+        port: 8080
+        requestPath: /readyz
+  targetRef:
+    group: ""
+    kind: Service
+    name: catalog
+---
+apiVersion: networking.gke.io/v1
+kind: HealthCheckPolicy
+metadata:
+  name: cart-readyz
+  namespace: shopfleet
+spec:
+  default:
+    config:
+      type: HTTP
+      httpHealthCheck: { port: 8080, requestPath: /readyz }
+  targetRef: { group: "", kind: Service, name: cart }
+---
+apiVersion: networking.gke.io/v1
+kind: HealthCheckPolicy
+metadata:
+  name: orders-readyz
+  namespace: shopfleet
+spec:
+  default:
+    config:
+      type: HTTP
+      httpHealthCheck: { port: 8080, requestPath: /readyz }
+  targetRef: { group: "", kind: Service, name: orders }
+---
+apiVersion: networking.gke.io/v1
+kind: HealthCheckPolicy
+metadata:
+  name: frontend-healthz
+  namespace: shopfleet
+spec:
+  default:
+    config:
+      type: HTTP
+      httpHealthCheck: { port: 8080, requestPath: /healthz }
+  targetRef: { group: "", kind: Service, name: frontend }

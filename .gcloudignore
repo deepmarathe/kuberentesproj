@@ -1,0 +1,8 @@
+# Files NOT uploaded to Cloud Build
+.git/
+terraform/
+docs/
+**/node_modules/
+**/__pycache__/
+**/.terraform/
+*.tfstate*

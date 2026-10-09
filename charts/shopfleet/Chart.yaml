@@ -1,0 +1,10 @@
+apiVersion: v2
+name: shopfleet
+description: ShopFleet -- a production-style microservices store for learning Kubernetes (CKA/CKAD practice)
+type: application
+version: 1.0.0          # chart version: bump on every chart change
+appVersion: "1.0.0"     # version of the app images (default image tag)
+keywords: [kubernetes, microservices, cka, ckad, training]
+maintainers:
+  - name: ShopFleet
+kubeVersion: ">=1.29.0-0"   # native sidecars (restartPolicy: Always on initContainers)

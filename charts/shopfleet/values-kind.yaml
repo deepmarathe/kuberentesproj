@@ -1,0 +1,10 @@
+# helm install shopfleet charts/shopfleet -n shopfleet -f charts/shopfleet/values-kind.yaml
+image:
+  registry: shopfleet
+  tag: dev
+  pullPolicy: IfNotPresent      # images are side-loaded with `kind load docker-image`
+ingress:
+  enabled: true
+  className: traefik
+loadgen:
+  maxUsers: 8

@@ -1,0 +1,148 @@
+{{- if .Values.opsApi.enabled }}
+# ---------------------------------------------------------------------------
+# ops-api: backend of the in-app cluster dashboard. It calls the Kubernetes API, so it
+# needs an identity (ServiceAccount) and permissions (RBAC) -- read every rule below.
+# ---------------------------------------------------------------------------
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: ops-api
+automountServiceAccountToken: false   # we mount a token ourselves (projected volume below)
+---
+# Namespaced permissions -> Role + RoleBinding
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: ops-api
+rules:
+  - apiGroups: [""]
+    resources: ["pods", "events", "services", "endpoints"]
+    verbs: ["get", "list", "watch"]
+  - apiGroups: ["apps"]
+    resources: ["deployments"]
+    verbs: ["get", "list", "patch"]            # patch = "rollout restart" from the dashboard
+  - apiGroups: ["apps"]
+    resources: ["deployments/scale"]           # a SUBRESOURCE: must be listed explicitly
+    verbs: ["get", "patch"]
+  - apiGroups: ["apps"]
+    resources: ["statefulsets", "daemonsets", "replicasets"]
+    verbs: ["get", "list"]
+  - apiGroups: ["autoscaling"]
+    resources: ["horizontalpodautoscalers"]
+    verbs: ["get", "list"]
+  - apiGroups: ["batch"]
+    resources: ["cronjobs", "jobs"]
+    verbs: ["get", "list"]
+  - apiGroups: ["shopfleet.io"]
+    resources: ["flashsales"]
+    verbs: ["get", "list", "watch", "create", "delete"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: ops-api
+subjects:
+  - { kind: ServiceAccount, name: ops-api, namespace: {{ .Release.Namespace }} }
+roleRef: { apiGroup: rbac.authorization.k8s.io, kind: Role, name: ops-api }
+---
+# Nodes are CLUSTER-scoped: no Role can grant them. ClusterRole + ClusterRoleBinding.
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: shopfleet-node-reader
+rules:
+  - apiGroups: [""]
+    resources: ["nodes"]
+    verbs: ["get", "list", "watch"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: shopfleet-ops-api-node-reader
+subjects:
+  - { kind: ServiceAccount, name: ops-api, namespace: {{ .Release.Namespace }} }
+roleRef: { apiGroup: rbac.authorization.k8s.io, kind: ClusterRole, name: shopfleet-node-reader }
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: ops-api
+  labels: { app: ops-api }
+spec:
+  replicas: 1
+  selector:
+    matchLabels: { app: ops-api }
+  template:
+    metadata:
+      labels:
+        app: ops-api
+        tier: app
+        shopfleet.io/metrics-port: http
+    spec:
+      serviceAccountName: ops-api
+      {{- include "shopfleet.imagePullSecrets" . | nindent 6 }}
+      priorityClassName: shopfleet-standard
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 10001
+        runAsGroup: 10001
+        seccompProfile: { type: RuntimeDefault }
+      containers:
+        - name: ops-api
+          image: {{ include "shopfleet.image" (dict "root" $ "name" "ops-api") }}
+          ports:
+            - { name: http, containerPort: 8080 }
+          env:
+            - name: POD_NAME
+              valueFrom: { fieldRef: { fieldPath: metadata.name } }
+            - name: POD_NAMESPACE
+              valueFrom: { fieldRef: { fieldPath: metadata.namespace } }   # Downward API
+            - { name: KUBE_TOKEN_FILE, value: /var/run/secrets/tokens/kube-api-token }
+            - { name: KUBE_CA_FILE, value: /var/run/secrets/tokens/ca.crt }
+            - { name: JWT_SECRET_FILE, value: /etc/shopfleet/jwt/jwt-secret }
+          resources:
+            {{- toYaml .Values.opsApi.resources | nindent 12 }}
+          readinessProbe:
+            httpGet: { path: /readyz, port: http }   # fails if RBAC/token is broken -> visible immediately
+            periodSeconds: 10
+          livenessProbe:
+            httpGet: { path: /healthz, port: http }
+            periodSeconds: 15
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities: { drop: ["ALL"] }
+          volumeMounts:
+            - { name: kube-api, mountPath: /var/run/secrets/tokens, readOnly: true }
+            - { name: jwt, mountPath: /etc/shopfleet/jwt, readOnly: true }
+            - { name: tmp, mountPath: /tmp }
+      volumes:
+        # PROJECTED volume: combines several sources into one directory. This is exactly what
+        # automountServiceAccountToken does for you -- written out so you can see it.
+        - name: kube-api
+          projected:
+            sources:
+              - serviceAccountToken:
+                  path: kube-api-token
+                  expirationSeconds: 3600        # short-lived; the kubelet refreshes it before expiry
+              - configMap:
+                  name: kube-root-ca.crt         # present in every namespace
+                  items: [{ key: ca.crt, path: ca.crt }]
+              - downwardAPI:
+                  items:
+                    - path: namespace
+                      fieldRef: { fieldPath: metadata.namespace }
+        - name: jwt
+          secret: { secretName: jwt-signing-key, defaultMode: 0440 }
+        - { name: tmp, emptyDir: {} }
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: ops-api
+  labels: { app: ops-api }
+spec:
+  selector: { app: ops-api }
+  ports:
+    - { name: http, port: 8080, targetPort: http }
+{{- end }}

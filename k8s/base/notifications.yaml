@@ -1,0 +1,117 @@
+# notifications: live order updates over Server-Sent Events (long-lived connections). Node.js.
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: notifications
+  namespace: shopfleet
+automountServiceAccountToken: false   # app never talks to the Kubernetes API
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: notifications
+  namespace: shopfleet
+  labels: { app: notifications }
+spec:
+  replicas: 2
+  revisionHistoryLimit: 5             # how many old ReplicaSets to keep for `kubectl rollout undo`
+  selector:
+    matchLabels: { app: notifications }
+  strategy:
+    type: RollingUpdate
+    rollingUpdate: { maxSurge: 1, maxUnavailable: 0 }   # never drop below desired capacity during a rollout
+  template:
+    metadata:
+      labels:
+        app: notifications
+        tier: app
+        shopfleet.io/metrics-port: http
+        shopfleet.io/redis-client: "true"
+        shopfleet.io/chaos: "allowed"
+    spec:
+      serviceAccountName: notifications
+      priorityClassName: shopfleet-standard
+      terminationGracePeriodSeconds: 20
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 1000
+        runAsGroup: 1000
+        seccompProfile: { type: RuntimeDefault }
+      # Spread replicas across nodes (and zones, on regional clusters) so one node failure isn't an outage.
+      topologySpreadConstraints:
+        - maxSkew: 1
+          topologyKey: kubernetes.io/hostname
+          whenUnsatisfiable: ScheduleAnyway
+          labelSelector: { matchLabels: { app: notifications } }
+      containers:
+        - name: notifications
+          image: shopfleet/notifications:latest
+          ports:
+            - { name: http, containerPort: 8080 }
+          envFrom:
+            - configMapRef: { name: shopfleet-config }
+          env:
+            - name: POD_NAME
+              valueFrom: { fieldRef: { fieldPath: metadata.name } }
+            - name: NODE_NAME
+              valueFrom: { fieldRef: { fieldPath: spec.nodeName } }
+            - name: JWT_SECRET_FILE
+              value: /etc/shopfleet/jwt/jwt-secret
+          resources:
+            requests: { cpu: 25m, memory: 64Mi }
+            limits: { memory: 128Mi }     # no CPU limit on purpose: avoids throttling, see docs/02-day2-operations.md
+          # startupProbe: give slow starts time before liveness kicks in.
+          startupProbe:
+            httpGet: { path: /healthz, port: http }
+            periodSeconds: 2
+            failureThreshold: 30
+          # readinessProbe: failing => removed from Service endpoints (no traffic), NOT restarted.
+          readinessProbe:
+            httpGet: { path: /readyz, port: http }
+            periodSeconds: 5
+            failureThreshold: 2
+          # livenessProbe: failing => container is restarted. Keep it dependency-free.
+          livenessProbe:
+            httpGet: { path: /healthz, port: http }
+            periodSeconds: 10
+            failureThreshold: 3
+          lifecycle:
+            preStop:
+              sleep: { seconds: 5 }     # let endpoint removal propagate before the app gets SIGTERM
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities: { drop: ["ALL"] }
+          volumeMounts:
+            - { name: tmp, mountPath: /tmp }
+            - { name: jwt, mountPath: /etc/shopfleet/jwt, readOnly: true }
+      volumes:
+        - { name: tmp, emptyDir: {} }
+        - name: jwt
+          secret: { secretName: jwt-signing-key, defaultMode: 0440 }   # Secret as a FILE (re-read on rotation)
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: notifications
+  namespace: shopfleet
+  labels: { app: notifications }
+spec:
+  type: ClusterIP
+  selector: { app: notifications }
+  ports:
+    - name: http
+      port: 8080
+      targetPort: 8080
+---
+# PodDisruptionBudget: voluntary disruptions (node drains, upgrades, autoscaler
+# scale-down) may not take this service below 1 ready pod.
+apiVersion: policy/v1
+kind: PodDisruptionBudget
+metadata:
+  name: notifications
+  namespace: shopfleet
+spec:
+  minAvailable: 1
+  selector:
+    matchLabels: { app: notifications }

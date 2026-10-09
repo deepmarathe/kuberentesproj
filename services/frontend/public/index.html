@@ -1,0 +1,61 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>ShopFleet</title>
+  <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><text y='.9em' font-size='90'>🛳️</text></svg>">
+  <link rel="stylesheet" href="/styles.css">
+</head>
+<body>
+  <header class="topbar">
+    <a class="brand" href="#/">🛳️ ShopFleet</a>
+    <form id="search" class="search" role="search">
+      <input id="q" type="search" placeholder="Search products…" aria-label="Search products" autocomplete="off">
+    </form>
+    <nav class="nav" aria-label="Main">
+      <a href="#/" data-route="shop">Shop</a>
+      <a href="#/orders" data-route="orders">Orders</a>
+      <a href="#/admin" data-route="admin" class="admin-only" hidden>Admin</a>
+      <a href="#/cluster" data-route="cluster" class="admin-only" hidden>Cluster</a>
+    </nav>
+    <div class="top-actions">
+      <span id="live" class="live" title="Live updates (Server-Sent Events)">○ offline</span>
+      <a id="account" class="btn ghost" href="#/login">Log in</a>
+      <button id="cartBtn" class="btn" aria-label="Open cart">🛒 <span id="cartCount">0</span></button>
+    </div>
+  </header>
+
+  <div id="promoBar" class="promo-bar" hidden></div>
+  <main id="view" tabindex="-1"></main>
+
+  <aside id="cart" class="drawer" aria-hidden="true" aria-label="Cart">
+    <div class="drawer-head"><h2>Your cart</h2><button id="closeCart" class="btn ghost" aria-label="Close cart">✕</button></div>
+    <div id="cartItems" class="drawer-body"></div>
+    <div class="drawer-foot">
+      <div class="total"><span>Total</span><strong id="cartTotal">$0.00</strong></div>
+      <p id="cartHint" class="muted small"></p>
+      <button id="checkout" class="btn primary block">Checkout</button>
+    </div>
+  </aside>
+  <div id="scrim" class="scrim" hidden></div>
+
+  <section id="hood" class="hood collapsed" aria-label="Under the hood">
+    <button id="hoodToggle" class="hood-head" aria-expanded="false">
+      <strong>🔧 Under the hood</strong>
+      <span class="muted small">every API call · which pod answered · latency</span>
+      <span id="session" class="muted small mono"></span>
+      <span class="chev">▴</span>
+    </button>
+    <div class="hood-body">
+      <table>
+        <thead><tr><th>time</th><th>request</th><th>status</th><th>ms</th><th>service</th><th>pod</th><th>cache</th></tr></thead>
+        <tbody id="hoodRows"></tbody>
+      </table>
+    </div>
+  </section>
+
+  <div id="toasts" class="toasts" role="status" aria-live="polite"></div>
+  <script type="module" src="/js/app.js"></script>
+</body>
+</html>

@@ -1,0 +1,145 @@
+# frontend: nginx serving the SPA and proxying /api/*, plus a log-tailing native sidecar.
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: frontend
+  namespace: shopfleet
+automountServiceAccountToken: false   # app never talks to the Kubernetes API
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: frontend
+  namespace: shopfleet
+  labels: { app: frontend }
+spec:
+  replicas: 2
+  revisionHistoryLimit: 5             # how many old ReplicaSets to keep for `kubectl rollout undo`
+  selector:
+    matchLabels: { app: frontend }
+  strategy:
+    type: RollingUpdate
+    rollingUpdate: { maxSurge: 1, maxUnavailable: 0 }   # never drop below desired capacity during a rollout
+  template:
+    metadata:
+      labels:
+        app: frontend
+        tier: app
+        shopfleet.io/metrics-port: none
+        shopfleet.io/chaos: "allowed"
+    spec:
+      serviceAccountName: frontend
+      priorityClassName: shopfleet-standard
+      terminationGracePeriodSeconds: 30
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 101
+        runAsGroup: 101
+        seccompProfile: { type: RuntimeDefault }
+      # Spread replicas across nodes (and zones, on regional clusters) so one node failure isn't an outage.
+      topologySpreadConstraints:
+        - maxSkew: 1
+          topologyKey: kubernetes.io/hostname
+          whenUnsatisfiable: ScheduleAnyway
+          labelSelector: { matchLabels: { app: frontend } }
+      initContainers:
+        # NATIVE SIDECAR (initContainer + restartPolicy: Always): starts before nginx, runs alongside it,
+        # and shares the "logs" emptyDir. `kubectl logs deploy/frontend -c access-log` shows the access log.
+        - name: access-log
+          image: busybox:1.36
+          restartPolicy: Always
+          command: ["sh", "-c", "touch /var/log/shopfleet/access.log; while true; do sleep 600; : > /var/log/shopfleet/access.log; done & tail -n0 -F /var/log/shopfleet/access.log"]
+          resources:
+            requests: { cpu: 5m, memory: 8Mi }
+            limits: { memory: 32Mi }
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities: { drop: ["ALL"] }
+          volumeMounts:
+            - { name: logs, mountPath: /var/log/shopfleet }
+      containers:
+        - name: frontend
+          image: shopfleet/frontend:latest
+          ports:
+            - { name: http, containerPort: 8080 }
+          envFrom:
+            - configMapRef: { name: shopfleet-config }
+          env:
+            - name: POD_NAME
+              valueFrom: { fieldRef: { fieldPath: metadata.name } }
+            - name: NODE_NAME
+              valueFrom: { fieldRef: { fieldPath: spec.nodeName } }
+          resources:
+            requests: { cpu: 25m, memory: 32Mi }
+            limits: { memory: 128Mi }     # no CPU limit on purpose: avoids throttling, see docs/02-day2-operations.md
+          readinessProbe:
+            httpGet: { path: /healthz, port: http }
+            periodSeconds: 5
+          livenessProbe:
+            httpGet: { path: /healthz, port: http }
+            periodSeconds: 10
+          lifecycle:
+            preStop:
+              sleep: { seconds: 5 }     # let endpoint removal propagate before the app gets SIGTERM
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities: { drop: ["ALL"] }
+          volumeMounts:
+            - { name: tmp, mountPath: /tmp }
+            - { name: cache, mountPath: /var/cache/nginx }
+            - { name: logs, mountPath: /var/log/shopfleet }
+      volumes:
+        - { name: tmp, emptyDir: {} }
+        - { name: cache, emptyDir: {} }
+        - name: logs
+          emptyDir: { sizeLimit: 64Mi }   # exceed it and the kubelet EVICTS the pod
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: frontend
+  namespace: shopfleet
+  labels: { app: frontend }
+spec:
+  type: ClusterIP
+  selector: { app: frontend }
+  ports:
+    - name: http
+      port: 8080
+      targetPort: 8080
+---
+# PodDisruptionBudget: voluntary disruptions (node drains, upgrades, autoscaler
+# scale-down) may not take this service below 1 ready pod.
+apiVersion: policy/v1
+kind: PodDisruptionBudget
+metadata:
+  name: frontend
+  namespace: shopfleet
+spec:
+  minAvailable: 1
+  selector:
+    matchLabels: { app: frontend }
+---
+# HorizontalPodAutoscaler: adds/removes replicas to keep average CPU near 70% of *requests*.
+apiVersion: autoscaling/v2
+kind: HorizontalPodAutoscaler
+metadata:
+  name: frontend
+  namespace: shopfleet
+spec:
+  scaleTargetRef: { apiVersion: apps/v1, kind: Deployment, name: frontend }
+  minReplicas: 2
+  maxReplicas: 4
+  metrics:
+    - type: Resource
+      resource:
+        name: cpu
+        target: { type: Utilization, averageUtilization: 70 }
+  behavior:
+    scaleDown:
+      stabilizationWindowSeconds: 120   # wait before scaling in, to avoid flapping
+      policies: [{ type: Pods, value: 1, periodSeconds: 60 }]
+    scaleUp:
+      policies: [{ type: Percent, value: 100, periodSeconds: 30 }]

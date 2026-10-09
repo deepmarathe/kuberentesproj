@@ -1,0 +1,118 @@
+# worker: consumes the `orders` Redis stream and fulfils orders. No HTTP API -> no Service.
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: worker
+  namespace: shopfleet
+automountServiceAccountToken: false   # app never talks to the Kubernetes API
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: worker
+  namespace: shopfleet
+  labels: { app: worker }
+spec:
+  replicas: 1
+  revisionHistoryLimit: 5             # how many old ReplicaSets to keep for `kubectl rollout undo`
+  selector:
+    matchLabels: { app: worker }
+  strategy:
+    type: RollingUpdate
+    rollingUpdate: { maxSurge: 1, maxUnavailable: 0 }   # never drop below desired capacity during a rollout
+  template:
+    metadata:
+      labels:
+        app: worker
+        tier: app
+        shopfleet.io/metrics-port: metrics
+        shopfleet.io/db-client: "true"
+        shopfleet.io/redis-client: "true"
+        shopfleet.io/chaos: "allowed"
+    spec:
+      serviceAccountName: worker
+      priorityClassName: shopfleet-standard
+      terminationGracePeriodSeconds: 60
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 10001
+        runAsGroup: 10001
+        seccompProfile: { type: RuntimeDefault }
+      # Spread replicas across nodes (and zones, on regional clusters) so one node failure isn't an outage.
+      topologySpreadConstraints:
+        - maxSkew: 1
+          topologyKey: kubernetes.io/hostname
+          whenUnsatisfiable: ScheduleAnyway
+          labelSelector: { matchLabels: { app: worker } }
+      initContainers:
+        # Init container: runs to completion BEFORE the app starts. Here: block until Postgres accepts TCP.
+        - name: wait-for-db
+          image: busybox:1.36
+          command: ["sh", "-c", "until nc -z -w 2 $(DB_HOST) $(DB_PORT); do echo waiting for $(DB_HOST):$(DB_PORT); sleep 2; done"]
+          envFrom:
+            - configMapRef: { name: shopfleet-config }
+          resources:
+            requests: { cpu: 10m, memory: 16Mi }
+            limits: { memory: 32Mi }
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities: { drop: ["ALL"] }
+      containers:
+        - name: worker
+          image: shopfleet/worker:latest
+          ports:
+            - { name: metrics, containerPort: 9100 }
+          envFrom:
+            - configMapRef: { name: shopfleet-config }
+          env:
+            - name: POD_NAME
+              valueFrom: { fieldRef: { fieldPath: metadata.name } }
+            - name: NODE_NAME
+              valueFrom: { fieldRef: { fieldPath: spec.nodeName } }
+            - name: DB_USER
+              valueFrom: { secretKeyRef: { name: postgres-credentials, key: DB_USER } }
+            - name: DB_PASSWORD
+              valueFrom: { secretKeyRef: { name: postgres-credentials, key: DB_PASSWORD } }
+          resources:
+            requests: { cpu: 100m, memory: 128Mi }
+            limits: { memory: 256Mi }     # no CPU limit on purpose: avoids throttling, see docs/02-day2-operations.md
+          # exec probe: the worker touches /tmp/heartbeat every loop; stale file => hung => restart.
+          livenessProbe:
+            exec:
+              command: ["sh", "-c", "test -n \"$(find /tmp/heartbeat -mmin -1)\""]
+            initialDelaySeconds: 30
+            periodSeconds: 20
+          lifecycle:
+            preStop:
+              sleep: { seconds: 5 }     # let endpoint removal propagate before the app gets SIGTERM
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities: { drop: ["ALL"] }
+          volumeMounts:
+            - { name: tmp, mountPath: /tmp }
+      volumes:
+        - { name: tmp, emptyDir: {} }
+---
+# HorizontalPodAutoscaler: adds/removes replicas to keep average CPU near 70% of *requests*.
+apiVersion: autoscaling/v2
+kind: HorizontalPodAutoscaler
+metadata:
+  name: worker
+  namespace: shopfleet
+spec:
+  scaleTargetRef: { apiVersion: apps/v1, kind: Deployment, name: worker }
+  minReplicas: 1
+  maxReplicas: 5
+  metrics:
+    - type: Resource
+      resource:
+        name: cpu
+        target: { type: Utilization, averageUtilization: 70 }
+  behavior:
+    scaleDown:
+      stabilizationWindowSeconds: 120   # wait before scaling in, to avoid flapping
+      policies: [{ type: Pods, value: 1, periodSeconds: 60 }]
+    scaleUp:
+      policies: [{ type: Percent, value: 100, periodSeconds: 30 }]

@@ -1,0 +1,69 @@
+# ---------------------------------------------------------------------------
+# node-agent DaemonSet: exactly one pod per node (new node -> new pod automatically).
+# Tolerates every taint, so it also runs on control-plane nodes and Spot nodes.
+#   kubectl -n shopfleet get ds node-agent      DESIRED == number of nodes
+# ---------------------------------------------------------------------------
+apiVersion: apps/v1
+kind: DaemonSet
+metadata:
+  name: node-agent
+  namespace: shopfleet
+  labels: { app: node-agent }
+spec:
+  selector:
+    matchLabels: { app: node-agent }
+  updateStrategy:
+    type: RollingUpdate
+    rollingUpdate: { maxUnavailable: 1 }   # one node at a time
+  template:
+    metadata:
+      labels:
+        app: node-agent
+        tier: system
+        shopfleet.io/metrics-port: metrics
+    spec:
+      automountServiceAccountToken: false
+      priorityClassName: shopfleet-critical
+      tolerations:
+        - operator: Exists                 # tolerate ALL taints (control-plane, spot, cordon-related...)
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 65532
+        runAsGroup: 65532
+        seccompProfile: { type: RuntimeDefault }
+      containers:
+        - name: agent
+          image: shopfleet/node-agent:latest
+          ports:
+            - { name: metrics, containerPort: 9100 }
+          env:
+            - name: NODE_NAME
+              valueFrom: { fieldRef: { fieldPath: spec.nodeName } }
+            - name: POD_NAME
+              valueFrom: { fieldRef: { fieldPath: metadata.name } }
+          resources:
+            requests: { cpu: 10m, memory: 16Mi }
+            limits: { memory: 32Mi }
+          readinessProbe:
+            httpGet: { path: /healthz, port: metrics }
+          livenessProbe:
+            httpGet: { path: /healthz, port: metrics }
+            periodSeconds: 20
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities: { drop: ["ALL"] }
+---
+# HEADLESS Service (clusterIP: None): DNS returns one A record per ready agent pod
+# instead of a single virtual IP. Try:  nslookup node-agent.shopfleet.svc.cluster.local
+apiVersion: v1
+kind: Service
+metadata:
+  name: node-agent
+  namespace: shopfleet
+  labels: { app: node-agent }
+spec:
+  clusterIP: None
+  selector: { app: node-agent }
+  ports:
+    - { name: metrics, port: 9100, targetPort: metrics }

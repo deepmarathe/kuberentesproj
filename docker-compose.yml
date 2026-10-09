@@ -1,0 +1,91 @@
+# Run the whole app on one machine with Docker (no Kubernetes):
+#   docker compose up --build        -> http://localhost:8080
+#   docker compose --profile load up -> also starts the load generator (UI: http://localhost:8089)
+# Compare this file with k8s/base: same containers, very different operational model.
+x-db-env: &db-env
+  DB_HOST: postgres
+  DB_PORT: "5432"
+  DB_NAME: shopfleet
+  DB_USER: shop
+  DB_PASSWORD: localdev
+  REDIS_HOST: redis
+  CATALOG_URL: http://catalog:8080
+  CART_URL: http://cart:8080
+  PAYMENT_URL: http://payment:8080
+  CHAOS_ENABLED: "true"
+  JWT_SECRET: local-dev-signing-key-0123456789abcdef
+
+services:
+  postgres:
+    image: postgres:16-alpine
+    environment: { POSTGRES_USER: shop, POSTGRES_PASSWORD: localdev, POSTGRES_DB: shopfleet }
+    volumes: [pgdata:/var/lib/postgresql/data]
+    healthcheck: { test: ["CMD-SHELL", "pg_isready -U shop -d shopfleet"], interval: 3s, retries: 20 }
+
+  redis:
+    image: redis:7.4-alpine
+    command: ["redis-server", "--appendonly", "yes"]
+    healthcheck: { test: ["CMD", "redis-cli", "ping"], interval: 3s, retries: 20 }
+
+  dbmigrate:
+    build: services/dbmigrate
+    environment: *db-env
+    depends_on: { postgres: { condition: service_healthy } }
+
+  catalog:
+    build: services/catalog
+    environment: *db-env
+    depends_on: { dbmigrate: { condition: service_completed_successfully }, redis: { condition: service_healthy } }
+
+  cart:
+    build: services/cart
+    environment: *db-env
+    depends_on: { redis: { condition: service_healthy }, catalog: { condition: service_started } }
+
+  payment:
+    build: services/payment
+
+  orders:
+    build: services/orders
+    environment: *db-env
+    depends_on: { dbmigrate: { condition: service_completed_successfully }, redis: { condition: service_healthy } }
+
+  worker:
+    build: services/worker
+    environment: *db-env
+    depends_on: { dbmigrate: { condition: service_completed_successfully }, redis: { condition: service_healthy } }
+
+  auth:
+    build: services/auth
+    environment:
+      <<: *db-env
+      ADMIN_EMAIL: admin@shopfleet.local
+      ADMIN_PASSWORD: ShopFleetAdmin123!
+    depends_on: { dbmigrate: { condition: service_completed_successfully } }
+
+  notifications:
+    build: services/notifications
+    environment: *db-env
+    depends_on: { redis: { condition: service_healthy } }
+
+  # The Kubernetes-only pieces (ops-api's cluster view, the FlashSale operator, node-agent)
+  # need a Kubernetes API. ops-api still starts here so nginx can resolve it; its pages show an error.
+  ops-api:
+    build: services/ops-api
+    environment: { JWT_SECRET: local-dev-signing-key-0123456789abcdef, KUBE_API: "https://kubernetes.invalid" }
+
+  frontend:
+    build: services/frontend
+    ports: ["8080:8080"]
+    depends_on: [catalog, cart, orders, auth, notifications, ops-api]
+
+  loadgen:
+    build: services/loadgen
+    profiles: [load]
+    command: ["-f", "/home/locust/locustfile.py", "--host", "http://frontend:8080", "--autostart"]
+    environment: { MAX_USERS: "10" }
+    ports: ["8089:8089"]
+    depends_on: [frontend]
+
+volumes:
+  pgdata:

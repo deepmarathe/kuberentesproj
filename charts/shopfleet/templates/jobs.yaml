@@ -1,0 +1,309 @@
+# ---------------------------------------------------------------------------
+# Batch workloads: a one-off Job (schema migration) and recurring CronJobs.
+# Trigger any CronJob by hand:  kubectl -n shopfleet create job --from=cronjob/restock restock-manual
+# ---------------------------------------------------------------------------
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: batch
+automountServiceAccountToken: false
+---
+# Runs the SQL migrations. Jobs are immutable, so scripts/deploy.sh deletes the old one first.
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: db-migrate
+  annotations:
+    # Helm HOOK: runs after install and before every upgrade; Helm waits for it to finish.
+    "helm.sh/hook": post-install,pre-upgrade
+    "helm.sh/hook-weight": "0"
+    "helm.sh/hook-delete-policy": before-hook-creation
+spec:
+  backoffLimit: 6                 # retries (with exponential backoff) before the Job is marked Failed
+  activeDeadlineSeconds: 600
+  ttlSecondsAfterFinished: 3600   # garbage-collect the finished Job after an hour
+  template:
+    metadata:
+      labels: { app: db-migrate, shopfleet.io/db-client: "true" }
+    spec:
+      serviceAccountName: batch
+      {{- include "shopfleet.imagePullSecrets" . | nindent 6 }}
+      restartPolicy: OnFailure
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 10001
+        runAsGroup: 10001
+        seccompProfile: { type: RuntimeDefault }
+      containers:
+        - name: migrate
+          image: {{ include "shopfleet.image" (dict "root" $ "name" "dbmigrate") }}
+          envFrom: [{ configMapRef: { name: shopfleet-config } }]
+          env:
+            - name: DB_USER
+              valueFrom: { secretKeyRef: { name: postgres-credentials, key: DB_USER } }
+            - name: DB_PASSWORD
+              valueFrom: { secretKeyRef: { name: postgres-credentials, key: DB_PASSWORD } }
+          resources:
+            requests: { cpu: 50m, memory: 64Mi }
+            limits: { memory: 256Mi }
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities: { drop: ["ALL"] }
+---
+apiVersion: batch/v1
+kind: CronJob
+metadata:
+  name: restock
+spec:
+  schedule: {{ .Values.cronJobs.restock.schedule | quote }}
+  suspend: {{ .Values.cronJobs.restock.suspend }}
+  concurrencyPolicy: Forbid           # never run two at once
+  successfulJobsHistoryLimit: 3
+  failedJobsHistoryLimit: 3
+  jobTemplate:
+    spec:
+      backoffLimit: 2
+      template:
+        metadata:
+          labels: { app: restock, shopfleet.io/db-client: "true" }
+        spec:
+          serviceAccountName: batch
+          {{- include "shopfleet.imagePullSecrets" . | nindent 10 }}
+          restartPolicy: Never
+          priorityClassName: shopfleet-low
+          securityContext:
+            runAsNonRoot: true
+            runAsUser: 10001
+            runAsGroup: 10001
+            seccompProfile: { type: RuntimeDefault }
+          containers:
+            - name: restock
+              image: {{ include "shopfleet.image" (dict "root" $ "name" "catalog") }}
+              command: ["python", "-m", "app.restock"]
+              envFrom: [{ configMapRef: { name: shopfleet-config } }]
+              env:
+                - name: DB_USER
+                  valueFrom: { secretKeyRef: { name: postgres-credentials, key: DB_USER } }
+                - name: DB_PASSWORD
+                  valueFrom: { secretKeyRef: { name: postgres-credentials, key: DB_PASSWORD } }
+              resources:
+                requests: { cpu: 50m, memory: 64Mi }
+                limits: { memory: 256Mi }
+              securityContext:
+                allowPrivilegeEscalation: false
+                readOnlyRootFilesystem: true
+                capabilities: { drop: ["ALL"] }
+---
+apiVersion: batch/v1
+kind: CronJob
+metadata:
+  name: order-reaper
+spec:
+  schedule: {{ .Values.cronJobs.orderReaper.schedule | quote }}
+  suspend: {{ .Values.cronJobs.orderReaper.suspend }}
+  concurrencyPolicy: Forbid
+  successfulJobsHistoryLimit: 3
+  failedJobsHistoryLimit: 3
+  jobTemplate:
+    spec:
+      backoffLimit: 2
+      activeDeadlineSeconds: 120
+      template:
+        metadata:
+          labels: { app: order-reaper, shopfleet.io/db-client: "true", shopfleet.io/redis-client: "true" }
+        spec:
+          serviceAccountName: batch
+          {{- include "shopfleet.imagePullSecrets" . | nindent 10 }}
+          restartPolicy: Never
+          priorityClassName: shopfleet-low
+          securityContext:
+            runAsNonRoot: true
+            runAsUser: 10001
+            runAsGroup: 10001
+            seccompProfile: { type: RuntimeDefault }
+          containers:
+            - name: reaper
+              image: {{ include "shopfleet.image" (dict "root" $ "name" "orders") }}
+              command: ["python", "-m", "jobs.reaper"]
+              envFrom: [{ configMapRef: { name: shopfleet-config } }]
+              env:
+                - name: DB_USER
+                  valueFrom: { secretKeyRef: { name: postgres-credentials, key: DB_USER } }
+                - name: DB_PASSWORD
+                  valueFrom: { secretKeyRef: { name: postgres-credentials, key: DB_PASSWORD } }
+              resources:
+                requests: { cpu: 50m, memory: 64Mi }
+                limits: { memory: 256Mi }
+              securityContext:
+                allowPrivilegeEscalation: false
+                readOnlyRootFilesystem: true
+                capabilities: { drop: ["ALL"] }
+---
+apiVersion: batch/v1
+kind: CronJob
+metadata:
+  name: recommender
+spec:
+  schedule: {{ .Values.cronJobs.recommender.schedule | quote }}
+  suspend: {{ .Values.cronJobs.recommender.suspend }}
+  concurrencyPolicy: Replace          # a new run cancels a still-running old one
+  startingDeadlineSeconds: 300        # if the controller was down, still start up to 5 min late
+  successfulJobsHistoryLimit: 2
+  failedJobsHistoryLimit: 2
+  jobTemplate:
+    spec:
+      backoffLimit: 2
+      activeDeadlineSeconds: 600
+      ttlSecondsAfterFinished: 3600
+      template:
+        metadata:
+          labels: { app: recommender, shopfleet.io/db-client: "true", shopfleet.io/redis-client: "true" }
+        spec:
+          serviceAccountName: batch
+          {{- include "shopfleet.imagePullSecrets" . | nindent 10 }}
+          restartPolicy: Never
+          priorityClassName: shopfleet-low
+          securityContext:
+            runAsNonRoot: true
+            runAsUser: 10001
+            runAsGroup: 10001
+            seccompProfile: { type: RuntimeDefault }
+          containers:
+            - name: recommender
+              image: {{ include "shopfleet.image" (dict "root" $ "name" "orders") }}
+              command: ["python", "-m", "jobs.recommender"]
+              envFrom: [{ configMapRef: { name: shopfleet-config } }]
+              env:
+                - name: DB_USER
+                  valueFrom: { secretKeyRef: { name: postgres-credentials, key: DB_USER } }
+                - name: DB_PASSWORD
+                  valueFrom: { secretKeyRef: { name: postgres-credentials, key: DB_PASSWORD } }
+              resources:
+                requests: { cpu: 50m, memory: 64Mi }
+                limits: { memory: 256Mi }
+              securityContext:
+                allowPrivilegeEscalation: false
+                readOnlyRootFilesystem: true
+                capabilities: { drop: ["ALL"] }
+---
+# Uses Workload Identity (on GKE) to write to Cloud Storage as a Google service account.
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: reports
+  # On GKE: annotate with iam.gke.io/gcp-service-account for Workload Identity
+---
+apiVersion: batch/v1
+kind: CronJob
+metadata:
+  name: daily-report
+spec:
+  schedule: {{ .Values.cronJobs.dailyReport.schedule | quote }}
+  suspend: {{ .Values.cronJobs.dailyReport.suspend }}
+  timeZone: "Etc/UTC"
+  concurrencyPolicy: Forbid
+  jobTemplate:
+    spec:
+      backoffLimit: 3
+      template:
+        metadata:
+          labels: { app: daily-report, shopfleet.io/db-client: "true" }
+        spec:
+          serviceAccountName: reports
+          {{- include "shopfleet.imagePullSecrets" . | nindent 10 }}
+          restartPolicy: Never
+          priorityClassName: shopfleet-low
+          securityContext:
+            runAsNonRoot: true
+            runAsUser: 10001
+            runAsGroup: 10001
+            seccompProfile: { type: RuntimeDefault }
+          containers:
+            - name: report
+              image: {{ include "shopfleet.image" (dict "root" $ "name" "orders") }}
+              command: ["python", "-m", "jobs.report"]
+              envFrom: [{ configMapRef: { name: shopfleet-config } }]
+              env:
+                - name: DB_USER
+                  valueFrom: { secretKeyRef: { name: postgres-credentials, key: DB_USER } }
+                - name: DB_PASSWORD
+                  valueFrom: { secretKeyRef: { name: postgres-credentials, key: DB_PASSWORD } }
+              resources:
+                requests: { cpu: 50m, memory: 128Mi }
+                limits: { memory: 256Mi }
+              securityContext:
+                allowPrivilegeEscalation: false
+                readOnlyRootFilesystem: true
+                capabilities: { drop: ["ALL"] }
+              volumeMounts: [{ name: tmp, mountPath: /tmp }]
+          volumes: [{ name: tmp, emptyDir: {} }]
+---
+# ---------------------------------------------------------------------------
+# Chaos monkey: deletes one random pod labelled shopfleet.io/chaos=allowed.
+# SUSPENDED by default. Enable:  kubectl -n shopfleet patch cronjob chaos-monkey -p '{"spec":{"suspend":false}}'
+# Needs Kubernetes API access -> its own ServiceAccount + a narrowly scoped Role (RBAC).
+# ---------------------------------------------------------------------------
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: chaos-monkey
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: chaos-monkey
+rules:
+  - apiGroups: [""]
+    resources: ["pods"]
+    verbs: ["list", "delete"]     # least privilege: nothing else
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: chaos-monkey
+subjects:
+  - kind: ServiceAccount
+    name: chaos-monkey
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: Role
+  name: chaos-monkey
+---
+apiVersion: batch/v1
+kind: CronJob
+metadata:
+  name: chaos-monkey
+spec:
+  schedule: {{ .Values.cronJobs.chaosMonkey.schedule | quote }}
+  suspend: {{ .Values.cronJobs.chaosMonkey.suspend }}
+  concurrencyPolicy: Forbid
+  jobTemplate:
+    spec:
+      backoffLimit: 0
+      template:
+        metadata:
+          labels: { app: chaos-monkey }
+        spec:
+          serviceAccountName: chaos-monkey
+          {{- include "shopfleet.imagePullSecrets" . | nindent 10 }}
+          restartPolicy: Never
+          priorityClassName: shopfleet-low
+          securityContext:
+            runAsNonRoot: true
+            runAsUser: 10001
+            runAsGroup: 10001
+            seccompProfile: { type: RuntimeDefault }
+          containers:
+            - name: monkey
+              image: {{ include "shopfleet.image" (dict "root" $ "name" "orders") }}
+              command: ["python", "-m", "jobs.chaos_monkey"]
+              env:
+                - { name: TARGET_SELECTOR, value: "shopfleet.io/chaos=allowed" }
+              resources:
+                requests: { cpu: 50m, memory: 64Mi }
+                limits: { memory: 256Mi }
+              securityContext:
+                allowPrivilegeEscalation: false
+                readOnlyRootFilesystem: true
+                capabilities: { drop: ["ALL"] }

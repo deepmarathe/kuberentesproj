@@ -1,0 +1,134 @@
+# cart: per-session carts in Redis. Node.js.
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: cart
+  namespace: shopfleet
+automountServiceAccountToken: false   # app never talks to the Kubernetes API
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: cart
+  namespace: shopfleet
+  labels: { app: cart }
+spec:
+  replicas: 2
+  revisionHistoryLimit: 5             # how many old ReplicaSets to keep for `kubectl rollout undo`
+  selector:
+    matchLabels: { app: cart }
+  strategy:
+    type: RollingUpdate
+    rollingUpdate: { maxSurge: 1, maxUnavailable: 0 }   # never drop below desired capacity during a rollout
+  template:
+    metadata:
+      labels:
+        app: cart
+        tier: app
+        shopfleet.io/metrics-port: http
+        shopfleet.io/redis-client: "true"
+        shopfleet.io/chaos: "allowed"
+    spec:
+      serviceAccountName: cart
+      priorityClassName: shopfleet-standard
+      terminationGracePeriodSeconds: 30
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 1000
+        runAsGroup: 1000
+        seccompProfile: { type: RuntimeDefault }
+      # Spread replicas across nodes (and zones, on regional clusters) so one node failure isn't an outage.
+      topologySpreadConstraints:
+        - maxSkew: 1
+          topologyKey: kubernetes.io/hostname
+          whenUnsatisfiable: ScheduleAnyway
+          labelSelector: { matchLabels: { app: cart } }
+      containers:
+        - name: cart
+          image: shopfleet/cart:latest
+          ports:
+            - { name: http, containerPort: 8080 }
+          envFrom:
+            - configMapRef: { name: shopfleet-config }
+          env:
+            - name: POD_NAME
+              valueFrom: { fieldRef: { fieldPath: metadata.name } }
+            - name: NODE_NAME
+              valueFrom: { fieldRef: { fieldPath: spec.nodeName } }
+          resources:
+            requests: { cpu: 50m, memory: 96Mi }
+            limits: { memory: 256Mi }     # no CPU limit on purpose: avoids throttling, see docs/02-day2-operations.md
+          # startupProbe: give slow starts time before liveness kicks in.
+          startupProbe:
+            httpGet: { path: /healthz, port: http }
+            periodSeconds: 2
+            failureThreshold: 30
+          # readinessProbe: failing => removed from Service endpoints (no traffic), NOT restarted.
+          readinessProbe:
+            httpGet: { path: /readyz, port: http }
+            periodSeconds: 5
+            failureThreshold: 2
+          # livenessProbe: failing => container is restarted. Keep it dependency-free.
+          livenessProbe:
+            httpGet: { path: /healthz, port: http }
+            periodSeconds: 10
+            failureThreshold: 3
+          lifecycle:
+            preStop:
+              sleep: { seconds: 5 }     # let endpoint removal propagate before the app gets SIGTERM
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities: { drop: ["ALL"] }
+          volumeMounts:
+            - { name: tmp, mountPath: /tmp }
+      volumes:
+        - { name: tmp, emptyDir: {} }
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: cart
+  namespace: shopfleet
+  labels: { app: cart }
+spec:
+  type: ClusterIP
+  selector: { app: cart }
+  ports:
+    - name: http
+      port: 8080
+      targetPort: 8080
+---
+# PodDisruptionBudget: voluntary disruptions (node drains, upgrades, autoscaler
+# scale-down) may not take this service below 1 ready pod.
+apiVersion: policy/v1
+kind: PodDisruptionBudget
+metadata:
+  name: cart
+  namespace: shopfleet
+spec:
+  minAvailable: 1
+  selector:
+    matchLabels: { app: cart }
+---
+# HorizontalPodAutoscaler: adds/removes replicas to keep average CPU near 70% of *requests*.
+apiVersion: autoscaling/v2
+kind: HorizontalPodAutoscaler
+metadata:
+  name: cart
+  namespace: shopfleet
+spec:
+  scaleTargetRef: { apiVersion: apps/v1, kind: Deployment, name: cart }
+  minReplicas: 2
+  maxReplicas: 6
+  metrics:
+    - type: Resource
+      resource:
+        name: cpu
+        target: { type: Utilization, averageUtilization: 70 }
+  behavior:
+    scaleDown:
+      stabilizationWindowSeconds: 120   # wait before scaling in, to avoid flapping
+      policies: [{ type: Pods, value: 1, periodSeconds: 60 }]
+    scaleUp:
+      policies: [{ type: Percent, value: 100, periodSeconds: 30 }]

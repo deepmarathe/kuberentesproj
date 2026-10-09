@@ -1,0 +1,40 @@
+# Written for Kubernetes 1.15-1.21. These API versions have since been REMOVED.
+apiVersion: batch/v1beta1
+kind: CronJob
+metadata: { name: legacy-cleanup }
+spec:
+  schedule: "0 * * * *"
+  jobTemplate:
+    spec:
+      template:
+        spec:
+          restartPolicy: OnFailure
+          containers: [{ name: c, image: busybox:1.36, command: ["echo", "cleanup"] }]
+---
+apiVersion: policy/v1beta1
+kind: PodDisruptionBudget
+metadata: { name: legacy-pdb }
+spec:
+  minAvailable: 1
+  selector: { matchLabels: { app: legacy-web } }
+---
+apiVersion: autoscaling/v2beta2
+kind: HorizontalPodAutoscaler
+metadata: { name: legacy-hpa }
+spec:
+  scaleTargetRef: { apiVersion: apps/v1, kind: Deployment, name: legacy-web }
+  minReplicas: 1
+  maxReplicas: 3
+  metrics:
+    - type: Resource
+      resource: { name: cpu, target: { type: Utilization, averageUtilization: 70 } }
+---
+apiVersion: extensions/v1beta1
+kind: Ingress
+metadata: { name: legacy-ingress }
+spec:
+  rules:
+    - http:
+        paths:
+          - path: /
+            backend: { serviceName: legacy-web, servicePort: 80 }

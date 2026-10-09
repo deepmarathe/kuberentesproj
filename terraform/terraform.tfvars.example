@@ -1,0 +1,5 @@
+# Copy to terraform.tfvars and edit.
+project_id  = "your-project-id"
+region      = "us-central1"
+zone        = "us-central1-a"
+alert_email = ""   # e.g. "you@example.com" to get alert emails during labs

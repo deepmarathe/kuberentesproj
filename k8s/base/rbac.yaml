@@ -1,0 +1,40 @@
+# ---------------------------------------------------------------------------
+# Human access via Kubernetes RBAC. On GKE, IAM decides who can reach the cluster
+# at all; RBAC decides what they can do inside it. See docs/labs/10-rbac.md.
+# ---------------------------------------------------------------------------
+# Read-only "on-call viewer": can look at everything in shopfleet, read logs,
+# but can't change anything or read Secrets.
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: oncall-viewer
+  namespace: shopfleet
+rules:
+  - apiGroups: ["", "apps", "batch", "autoscaling", "policy", "networking.k8s.io"]
+    resources: ["pods", "pods/log", "services", "endpoints", "configmaps", "events",
+                "deployments", "replicasets", "statefulsets", "jobs", "cronjobs",
+                "horizontalpodautoscalers", "poddisruptionbudgets", "networkpolicies", "ingresses"]
+    verbs: ["get", "list", "watch"]
+---
+# Developer: can deploy and restart workloads, exec/port-forward for debugging,
+# but can't touch RBAC, quotas, or Secrets.
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: developer
+  namespace: shopfleet
+rules:
+  - apiGroups: ["", "apps", "batch", "autoscaling"]
+    resources: ["pods", "pods/log", "services", "configmaps", "events", "deployments", "deployments/scale",
+                "replicasets", "statefulsets", "jobs", "cronjobs", "horizontalpodautoscalers"]
+    verbs: ["get", "list", "watch", "create", "update", "patch", "delete"]
+  - apiGroups: [""]
+    resources: ["pods/exec", "pods/portforward"]
+    verbs: ["create"]
+# Bind it to a person or Google Group (edit the email, then apply):
+# ---
+# apiVersion: rbac.authorization.k8s.io/v1
+# kind: RoleBinding
+# metadata: { name: developer-alice, namespace: shopfleet }
+# subjects: [{ kind: User, name: alice@example.com, apiGroup: rbac.authorization.k8s.io }]
+# roleRef: { kind: Role, name: developer, apiGroup: rbac.authorization.k8s.io }

@@ -1,0 +1,38 @@
+# GKE Ingress -> a global external Application Load Balancer.
+# Path-based routing: the LB sends /api/* straight to each service's pods (via NEGs),
+# everything else to the frontend. Takes ~5-10 minutes to provision the first time.
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: shopfleet
+  namespace: shopfleet
+  annotations:
+    kubernetes.io/ingress.class: gce
+    kubernetes.io/ingress.global-static-ip-name: shopfleet-ip   # reserved by Terraform
+spec:
+  defaultBackend:
+    service: { name: frontend, port: { number: 8080 } }
+  rules:
+    - http:
+        paths:
+          - path: /api/catalog
+            pathType: Prefix
+            backend: { service: { name: catalog, port: { number: 8080 } } }
+          - path: /api/cart
+            pathType: Prefix
+            backend: { service: { name: cart, port: { number: 8080 } } }
+          - path: /api/orders
+            pathType: Prefix
+            backend: { service: { name: orders, port: { number: 8080 } } }
+          - path: /api/auth
+            pathType: Prefix
+            backend: { service: { name: auth, port: { number: 8080 } } }
+          - path: /api/notify
+            pathType: Prefix
+            backend: { service: { name: notifications, port: { number: 8080 } } }
+          - path: /api/ops
+            pathType: Prefix
+            backend: { service: { name: ops-api, port: { number: 8080 } } }
+          - path: /
+            pathType: Prefix
+            backend: { service: { name: frontend, port: { number: 8080 } } }

@@ -1,0 +1,26 @@
+# Google Cloud Managed Service for Prometheus: scrape /metrics from pods.
+# Query in Cloud Console -> Monitoring -> Metrics Explorer -> PromQL.
+apiVersion: monitoring.googleapis.com/v1
+kind: PodMonitoring
+metadata:
+  name: shopfleet-http
+  namespace: shopfleet
+spec:
+  selector:
+    matchLabels: { shopfleet.io/metrics-port: http }
+  endpoints:
+    - port: http
+      path: /metrics
+      interval: 30s
+---
+apiVersion: monitoring.googleapis.com/v1
+kind: PodMonitoring
+metadata:
+  name: shopfleet-worker
+  namespace: shopfleet
+spec:
+  selector:
+    matchLabels: { shopfleet.io/metrics-port: metrics }
+  endpoints:
+    - port: metrics
+      interval: 30s

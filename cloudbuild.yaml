@@ -1,0 +1,100 @@
+# =============================================================================
+# CI/CD pipeline (Cloud Build): build 13 images in parallel -> push -> deploy to GKE.
+#   Manual run:   scripts/build-and-deploy.sh
+#   Automatic:    connect a GitHub repo and create a trigger (docs/labs/13-cicd.md)
+# =============================================================================
+substitutions:
+  _REGION: us-central1
+  _ZONE: us-central1-a
+  _CLUSTER: shopfleet
+  _TAG: manual
+  _DEPLOY: "true"
+
+serviceAccount: projects/$PROJECT_ID/serviceAccounts/shopfleet-cloudbuild@$PROJECT_ID.iam.gserviceaccount.com
+options:
+  logging: CLOUD_LOGGING_ONLY      # required when using a custom service account
+  dynamicSubstitutions: true       # lets a trigger set _TAG=$SHORT_SHA (lab 13)
+timeout: 1800s
+
+steps:
+  - id: frontend
+    name: gcr.io/cloud-builders/docker
+    waitFor: ["-"]   # "-" = start immediately, in parallel with the other builds
+    args: ["build", "-t", "${_REGION}-docker.pkg.dev/$PROJECT_ID/shopfleet/frontend:${_TAG}", "--build-arg", "APP_VERSION=${_TAG}", "services/frontend"]
+  - id: catalog
+    name: gcr.io/cloud-builders/docker
+    waitFor: ["-"]
+    args: ["build", "-t", "${_REGION}-docker.pkg.dev/$PROJECT_ID/shopfleet/catalog:${_TAG}", "--build-arg", "APP_VERSION=${_TAG}", "services/catalog"]
+  - id: cart
+    name: gcr.io/cloud-builders/docker
+    waitFor: ["-"]
+    args: ["build", "-t", "${_REGION}-docker.pkg.dev/$PROJECT_ID/shopfleet/cart:${_TAG}", "--build-arg", "APP_VERSION=${_TAG}", "services/cart"]
+  - id: orders
+    name: gcr.io/cloud-builders/docker
+    waitFor: ["-"]
+    args: ["build", "-t", "${_REGION}-docker.pkg.dev/$PROJECT_ID/shopfleet/orders:${_TAG}", "--build-arg", "APP_VERSION=${_TAG}", "services/orders"]
+  - id: payment
+    name: gcr.io/cloud-builders/docker
+    waitFor: ["-"]
+    args: ["build", "-t", "${_REGION}-docker.pkg.dev/$PROJECT_ID/shopfleet/payment:${_TAG}", "--build-arg", "APP_VERSION=${_TAG}", "services/payment"]
+  - id: worker
+    name: gcr.io/cloud-builders/docker
+    waitFor: ["-"]
+    args: ["build", "-t", "${_REGION}-docker.pkg.dev/$PROJECT_ID/shopfleet/worker:${_TAG}", "--build-arg", "APP_VERSION=${_TAG}", "services/worker"]
+  - id: dbmigrate
+    name: gcr.io/cloud-builders/docker
+    waitFor: ["-"]
+    args: ["build", "-t", "${_REGION}-docker.pkg.dev/$PROJECT_ID/shopfleet/dbmigrate:${_TAG}", "services/dbmigrate"]
+  - id: loadgen
+    name: gcr.io/cloud-builders/docker
+    waitFor: ["-"]
+    args: ["build", "-t", "${_REGION}-docker.pkg.dev/$PROJECT_ID/shopfleet/loadgen:${_TAG}", "services/loadgen"]
+
+  - id: auth
+    name: gcr.io/cloud-builders/docker
+    waitFor: ["-"]
+    args: ["build", "-t", "${_REGION}-docker.pkg.dev/$PROJECT_ID/shopfleet/auth:${_TAG}", "--build-arg", "APP_VERSION=${_TAG}", "services/auth"]
+  - id: notifications
+    name: gcr.io/cloud-builders/docker
+    waitFor: ["-"]
+    args: ["build", "-t", "${_REGION}-docker.pkg.dev/$PROJECT_ID/shopfleet/notifications:${_TAG}", "--build-arg", "APP_VERSION=${_TAG}", "services/notifications"]
+  - id: ops-api
+    name: gcr.io/cloud-builders/docker
+    waitFor: ["-"]
+    args: ["build", "-t", "${_REGION}-docker.pkg.dev/$PROJECT_ID/shopfleet/ops-api:${_TAG}", "--build-arg", "APP_VERSION=${_TAG}", "services/ops-api"]
+  - id: operator
+    name: gcr.io/cloud-builders/docker
+    waitFor: ["-"]
+    args: ["build", "-t", "${_REGION}-docker.pkg.dev/$PROJECT_ID/shopfleet/operator:${_TAG}", "--build-arg", "APP_VERSION=${_TAG}", "services/operator"]
+  - id: node-agent
+    name: gcr.io/cloud-builders/docker
+    waitFor: ["-"]
+    args: ["build", "-t", "${_REGION}-docker.pkg.dev/$PROJECT_ID/shopfleet/node-agent:${_TAG}", "--build-arg", "APP_VERSION=${_TAG}", "services/node-agent"]
+
+  - id: push
+    name: gcr.io/cloud-builders/docker
+    waitFor: [frontend, catalog, cart, orders, payment, worker, dbmigrate, loadgen, auth, notifications, ops-api, operator, node-agent]
+    entrypoint: bash
+    args:
+      - -c
+      - |
+        set -e
+        for s in frontend catalog cart orders payment worker dbmigrate loadgen auth notifications ops-api operator node-agent; do
+          docker push "${_REGION}-docker.pkg.dev/$PROJECT_ID/shopfleet/$$s:${_TAG}"
+        done
+
+  - id: deploy
+    name: gcr.io/google.com/cloudsdktool/cloud-sdk:stable   # has gcloud + kubectl
+    waitFor: [push]
+    entrypoint: bash
+    env:
+      - PROJECT_ID=$PROJECT_ID
+      - REGION=${_REGION}
+      - TAG=${_TAG}
+    args:
+      - -c
+      - |
+        set -e
+        if [ "${_DEPLOY}" != "true" ]; then echo "_DEPLOY=${_DEPLOY}: skipping deploy"; exit 0; fi
+        gcloud container clusters get-credentials ${_CLUSTER} --zone ${_ZONE} --project $PROJECT_ID
+        bash scripts/deploy.sh

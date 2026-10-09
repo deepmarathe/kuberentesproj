@@ -1,0 +1,52 @@
+# BackendConfig = GKE-specific settings for the load balancer's backend services.
+apiVersion: cloud.google.com/v1
+kind: BackendConfig
+metadata:
+  name: api
+  namespace: shopfleet
+spec:
+  healthCheck:
+    type: HTTP
+    requestPath: /readyz
+    port: 8080
+    checkIntervalSec: 10
+    healthyThreshold: 1
+    unhealthyThreshold: 3
+  timeoutSec: 30
+  connectionDraining:
+    drainingTimeoutSec: 30
+  logging:
+    enable: true
+    sampleRate: 0.2      # LB request logs in Cloud Logging (20% sampled to save cost)
+---
+apiVersion: cloud.google.com/v1
+kind: BackendConfig
+metadata:
+  name: frontend
+  namespace: shopfleet
+spec:
+  healthCheck:
+    type: HTTP
+    requestPath: /healthz
+    port: 8080
+  timeoutSec: 30
+  connectionDraining:
+    drainingTimeoutSec: 30
+  cdn:
+    enabled: false        # flip to true in docs/labs/14-https-and-cdn.md
+---
+# Server-Sent Events keep a request open for a long time. The LB's default 30s backend
+# timeout would cut every stream after 30s -- so notifications gets its own BackendConfig.
+apiVersion: cloud.google.com/v1
+kind: BackendConfig
+metadata:
+  name: stream
+  namespace: shopfleet
+spec:
+  healthCheck:
+    type: HTTP
+    requestPath: /readyz
+    port: 8080
+  timeoutSec: 3600
+  connectionDraining:
+    drainingTimeoutSec: 60

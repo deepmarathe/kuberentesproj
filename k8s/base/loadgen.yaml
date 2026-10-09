@@ -1,0 +1,70 @@
+# ---------------------------------------------------------------------------
+# Load generator: simulated shoppers running 24/7 in their own namespace.
+# UI:  kubectl -n loadgen port-forward svc/loadgen 8089:8089  ->  http://localhost:8089
+# Change traffic:  kubectl -n loadgen set env deploy/loadgen MAX_USERS=60
+# Stop traffic:    kubectl -n loadgen scale deploy/loadgen --replicas=0
+# ---------------------------------------------------------------------------
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: loadgen
+  namespace: loadgen
+automountServiceAccountToken: false
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: loadgen
+  namespace: loadgen
+  labels: { app: loadgen }
+spec:
+  replicas: 1
+  selector:
+    matchLabels: { app: loadgen }
+  template:
+    metadata:
+      labels: { app: loadgen }
+    spec:
+      serviceAccountName: loadgen
+      priorityClassName: shopfleet-low
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 1000
+        runAsGroup: 1000
+        seccompProfile: { type: RuntimeDefault }
+      containers:
+        - name: locust
+          image: shopfleet/loadgen:latest
+          args:
+            - -f
+            - /home/locust/locustfile.py
+            - --host
+            - $(TARGET_HOST)
+            - --autostart           # start the test immediately but keep the web UI
+          ports:
+            - { name: http, containerPort: 8089 }
+          env:
+            - { name: TARGET_HOST, value: "http://frontend.shopfleet.svc.cluster.local:8080" }
+            - { name: MIN_USERS, value: "3" }
+            - { name: MAX_USERS, value: "25" }
+            - { name: PERIOD_MINUTES, value: "60" }
+            - { name: SPIKE_EVERY_MINUTES, value: "0" }   # e.g. 30 = a "flash sale" every 30 min
+          resources:
+            requests: { cpu: 200m, memory: 256Mi }
+            limits: { memory: 512Mi }
+          readinessProbe:
+            httpGet: { path: /, port: http }
+            periodSeconds: 10
+          securityContext:
+            allowPrivilegeEscalation: false
+            capabilities: { drop: ["ALL"] }
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: loadgen
+  namespace: loadgen
+spec:
+  selector: { app: loadgen }
+  ports:
+    - { name: http, port: 8089, targetPort: http }

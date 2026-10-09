@@ -1,0 +1,30 @@
+# Lab 08: Vertical Pod Autoscaler in recommendation-only mode.
+# After ~15-30 min of traffic:  kubectl -n shopfleet describe vpa catalog  -> "Target" = suggested requests.
+# updateMode "Off" because catalog's HPA already scales on CPU -- VPA + HPA on the same
+# metric fight each other.
+apiVersion: autoscaling.k8s.io/v1
+kind: VerticalPodAutoscaler
+metadata:
+  name: catalog
+  namespace: shopfleet
+spec:
+  targetRef: { apiVersion: apps/v1, kind: Deployment, name: catalog }
+  updatePolicy: { updateMode: "Off" }
+---
+apiVersion: autoscaling.k8s.io/v1
+kind: VerticalPodAutoscaler
+metadata:
+  name: orders
+  namespace: shopfleet
+spec:
+  targetRef: { apiVersion: apps/v1, kind: Deployment, name: orders }
+  updatePolicy: { updateMode: "Off" }
+---
+apiVersion: autoscaling.k8s.io/v1
+kind: VerticalPodAutoscaler
+metadata:
+  name: postgres
+  namespace: shopfleet
+spec:
+  targetRef: { apiVersion: apps/v1, kind: StatefulSet, name: postgres }
+  updatePolicy: { updateMode: "Off" }

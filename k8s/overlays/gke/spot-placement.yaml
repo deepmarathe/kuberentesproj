@@ -1,0 +1,15 @@
+# JSON6902 patch applied to worker + loadgen.
+# toleration = "I'm ALLOWED on spot nodes"; affinity = "I PREFER spot nodes".
+- op: add
+  path: /spec/template/spec/tolerations
+  value:
+    - { key: cloud.google.com/gke-spot, operator: Equal, value: "true", effect: NoSchedule }
+- op: add
+  path: /spec/template/spec/affinity
+  value:
+    nodeAffinity:
+      preferredDuringSchedulingIgnoredDuringExecution:
+        - weight: 100
+          preference:
+            matchExpressions:
+              - { key: cloud.google.com/gke-spot, operator: In, values: ["true"] }

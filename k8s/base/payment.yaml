@@ -1,0 +1,116 @@
+# payment: fake payment gateway with tunable chaos (hot-reloaded from a ConfigMap). Go, distroless.
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: payment
+  namespace: shopfleet
+automountServiceAccountToken: false   # app never talks to the Kubernetes API
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: payment
+  namespace: shopfleet
+  labels: { app: payment }
+spec:
+  replicas: 2
+  revisionHistoryLimit: 5             # how many old ReplicaSets to keep for `kubectl rollout undo`
+  selector:
+    matchLabels: { app: payment }
+  strategy:
+    type: RollingUpdate
+    rollingUpdate: { maxSurge: 1, maxUnavailable: 0 }   # never drop below desired capacity during a rollout
+  template:
+    metadata:
+      labels:
+        app: payment
+        tier: app
+        shopfleet.io/metrics-port: http
+        shopfleet.io/chaos: "allowed"
+    spec:
+      serviceAccountName: payment
+      priorityClassName: shopfleet-standard
+      terminationGracePeriodSeconds: 30
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 65532
+        runAsGroup: 65532
+        seccompProfile: { type: RuntimeDefault }
+      # Spread replicas across nodes (and zones, on regional clusters) so one node failure isn't an outage.
+      topologySpreadConstraints:
+        - maxSkew: 1
+          topologyKey: kubernetes.io/hostname
+          whenUnsatisfiable: ScheduleAnyway
+          labelSelector: { matchLabels: { app: payment } }
+      containers:
+        - name: payment
+          image: shopfleet/payment:latest
+          ports:
+            - { name: http, containerPort: 8080 }
+          envFrom:
+            - configMapRef: { name: shopfleet-config }
+          env:
+            - name: POD_NAME
+              valueFrom: { fieldRef: { fieldPath: metadata.name } }
+            - name: NODE_NAME
+              valueFrom: { fieldRef: { fieldPath: spec.nodeName } }
+            - name: CHAOS_CONFIG_FILE
+              value: /etc/payment/chaos.json
+          resources:
+            requests: { cpu: 25m, memory: 32Mi }
+            limits: { memory: 64Mi }     # no CPU limit on purpose: avoids throttling, see docs/02-day2-operations.md
+          # startupProbe: give slow starts time before liveness kicks in.
+          startupProbe:
+            httpGet: { path: /healthz, port: http }
+            periodSeconds: 2
+            failureThreshold: 30
+          # readinessProbe: failing => removed from Service endpoints (no traffic), NOT restarted.
+          readinessProbe:
+            httpGet: { path: /readyz, port: http }
+            periodSeconds: 5
+            failureThreshold: 2
+          # livenessProbe: failing => container is restarted. Keep it dependency-free.
+          livenessProbe:
+            httpGet: { path: /healthz, port: http }
+            periodSeconds: 10
+            failureThreshold: 3
+          lifecycle:
+            preStop:
+              sleep: { seconds: 5 }     # let endpoint removal propagate before the app gets SIGTERM
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities: { drop: ["ALL"] }
+          volumeMounts:
+            - { name: tmp, mountPath: /tmp }
+            - { name: chaos, mountPath: /etc/payment, readOnly: true }
+      volumes:
+        - { name: tmp, emptyDir: {} }
+        - name: chaos
+          configMap: { name: payment-chaos }   # mounted as files -> updates propagate live
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: payment
+  namespace: shopfleet
+  labels: { app: payment }
+spec:
+  type: ClusterIP
+  selector: { app: payment }
+  ports:
+    - name: http
+      port: 8080
+      targetPort: 8080
+---
+# PodDisruptionBudget: voluntary disruptions (node drains, upgrades, autoscaler
+# scale-down) may not take this service below 1 ready pod.
+apiVersion: policy/v1
+kind: PodDisruptionBudget
+metadata:
+  name: payment
+  namespace: shopfleet
+spec:
+  minAvailable: 1
+  selector:
+    matchLabels: { app: payment }

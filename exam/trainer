@@ -1,0 +1,3 @@
+#!/usr/bin/env bash
+# ShopFleet CKA/CKAD trainer. Usage: ./exam/trainer help
+exec python3 "$(cd "$(dirname "$0")" && pwd)/trainer.py" "$@"

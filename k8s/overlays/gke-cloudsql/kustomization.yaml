@@ -1,0 +1,29 @@
+# Lab 15: move from in-cluster Postgres to Cloud SQL.
+# Every DB client gets the Cloud SQL Auth Proxy as a *native sidecar* (an initContainer with
+# restartPolicy: Always -- it starts first, and in Jobs it exits when the main container finishes).
+# Apps connect to 127.0.0.1:5432; the proxy handles IAM auth + TLS to Cloud SQL.
+# Placeholders replaced by deploy.sh (OVERLAY=gke-cloudsql) + __SQL_INSTANCE__ (PROJECT:REGION:shopfleet-sql).
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+
+resources:
+  - ../gke
+
+configMapGenerator:
+  - name: shopfleet-config
+    namespace: shopfleet
+    behavior: merge
+    literals:
+      - DB_HOST=127.0.0.1
+
+patches:
+  - { path: sidecar-pod.yaml, target: { kind: Deployment, name: "catalog|orders|worker" } }
+  - { path: sidecar-pod.yaml, target: { kind: Job, name: db-migrate } }
+  - { path: sidecar-cronjob.yaml, target: { kind: CronJob, name: "restock|order-reaper|daily-report" } }
+  - target: { kind: ServiceAccount, name: "catalog|orders|worker|batch" }
+    patch: |-
+      - op: add
+        path: /metadata/annotations
+        value:
+          iam.gke.io/gcp-service-account: shopfleet-sql@__PROJECT_ID__.iam.gserviceaccount.com
+  # The proxy needs the KSA token-free GKE metadata server only; no API token needed.

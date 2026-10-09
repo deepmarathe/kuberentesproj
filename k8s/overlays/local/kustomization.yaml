@@ -1,0 +1,29 @@
+# Local overlay for kind / minikube / Docker Desktop Kubernetes.
+# Images are built locally with tag "dev" and loaded into the cluster (see scripts/local-kind.sh).
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+
+resources:
+  - ../../base
+
+images:
+  - { name: shopfleet/frontend,  newTag: dev }
+  - { name: shopfleet/catalog,   newTag: dev }
+  - { name: shopfleet/cart,      newTag: dev }
+  - { name: shopfleet/orders,    newTag: dev }
+  - { name: shopfleet/payment,   newTag: dev }
+  - { name: shopfleet/worker,    newTag: dev }
+  - { name: shopfleet/dbmigrate, newTag: dev }
+  - { name: shopfleet/loadgen,   newTag: dev }
+  - { name: shopfleet/auth, newTag: dev }
+  - { name: shopfleet/notifications, newTag: dev }
+  - { name: shopfleet/ops-api, newTag: dev }
+  - { name: shopfleet/operator, newTag: dev }
+  - { name: shopfleet/node-agent, newTag: dev }
+
+patches:
+  - target: { kind: Deployment, name: loadgen }
+    patch: |-
+      - op: replace
+        path: /spec/template/spec/containers/0/env/2/value
+        value: "8"

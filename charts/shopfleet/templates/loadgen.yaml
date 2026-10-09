@@ -1,0 +1,55 @@
+{{- if .Values.loadgen.enabled }}
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: loadgen
+  labels: {{- include "shopfleet.labels" . | nindent 4 }}
+automountServiceAccountToken: false
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: loadgen
+  labels:
+    app: loadgen
+    {{- include "shopfleet.labels" . | nindent 4 }}
+spec:
+  replicas: 1
+  selector:
+    matchLabels: { app: loadgen }
+  template:
+    metadata:
+      labels: { app: loadgen }
+    spec:
+      serviceAccountName: loadgen
+      priorityClassName: shopfleet-low
+      {{- include "shopfleet.imagePullSecrets" . | nindent 6 }}
+      {{- include "shopfleet.podSecurity" 1000 | nindent 6 }}
+      containers:
+        - name: locust
+          image: {{ include "shopfleet.image" (dict "root" $ "name" "loadgen") }}
+          imagePullPolicy: {{ .Values.image.pullPolicy }}
+          args: ["-f", "/home/locust/locustfile.py", "--host", "http://frontend:8080", "--autostart"]
+          ports: [{ name: http, containerPort: 8089 }]
+          env:
+            - { name: MIN_USERS, value: {{ .Values.loadgen.minUsers | quote }} }
+            - { name: MAX_USERS, value: {{ .Values.loadgen.maxUsers | quote }} }
+            - { name: PERIOD_MINUTES, value: {{ .Values.loadgen.periodMinutes | quote }} }
+            - { name: SPIKE_EVERY_MINUTES, value: {{ .Values.loadgen.spikeEveryMinutes | quote }} }
+          resources: {{- toYaml .Values.loadgen.resources | nindent 12 }}
+          readinessProbe:
+            httpGet: { path: /, port: http }
+            periodSeconds: 10
+          securityContext:
+            allowPrivilegeEscalation: false
+            capabilities: { drop: ["ALL"] }
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: loadgen
+  labels: {{- include "shopfleet.labels" . | nindent 4 }}
+spec:
+  selector: { app: loadgen }
+  ports: [{ name: http, port: 8089, targetPort: http }]
+{{- end }}

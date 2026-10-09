@@ -1,0 +1,74 @@
+# ---------------------------------------------------------------------------
+# CustomResourceDefinition: teaches the API server a new kind, "FlashSale".
+#   kubectl get flashsales | kubectl get fs | kubectl explain flashsale.spec
+# The FlashSale operator (operator.yaml) watches these and applies discounts in the store.
+# ---------------------------------------------------------------------------
+apiVersion: apiextensions.k8s.io/v1
+kind: CustomResourceDefinition
+metadata:
+  name: flashsales.shopfleet.io          # must be <plural>.<group>
+spec:
+  group: shopfleet.io
+  scope: Namespaced
+  names:
+    kind: FlashSale
+    singular: flashsale
+    plural: flashsales
+    shortNames: [fs]
+    categories: [shopfleet]              # `kubectl get shopfleet` lists these
+  versions:
+    - name: v1alpha1
+      served: true
+      storage: true
+      subresources:
+        status: {}                       # spec and status are updated through separate endpoints
+      additionalPrinterColumns:
+        - { name: Category, type: string, jsonPath: .spec.category }
+        - { name: Discount, type: integer, jsonPath: .spec.discountPercent }
+        - { name: Phase, type: string, jsonPath: .status.phase }
+        - { name: Ends, type: string, jsonPath: .spec.endsAt }
+        - { name: Age, type: date, jsonPath: .metadata.creationTimestamp }
+      schema:
+        openAPIV3Schema:
+          type: object
+          required: [spec]
+          properties:
+            spec:
+              type: object
+              required: [category, discountPercent, endsAt]
+              # CEL validation rules run inside the API server -- invalid objects are rejected at `kubectl apply`.
+              x-kubernetes-validations:
+                - rule: "!has(self.startsAt) || timestamp(self.endsAt) > timestamp(self.startsAt)"
+                  message: "endsAt must be after startsAt"
+                - rule: "self.discountPercent <= 50 || self.category != 'Grocery'"
+                  message: "grocery discounts are capped at 50%"
+              properties:
+                title:
+                  type: string
+                  maxLength: 80
+                category:
+                  type: string
+                  enum: [Electronics, Home, Outdoors, Books, Grocery, Toys]
+                discountPercent:
+                  type: integer
+                  minimum: 5
+                  maximum: 90
+                startsAt:
+                  type: string
+                  format: date-time
+                  description: When the sale starts (RFC3339). Defaults to creation time.
+                endsAt:
+                  type: string
+                  format: date-time
+                paused:
+                  type: boolean
+                  default: false
+            status:
+              type: object
+              properties:
+                phase:
+                  type: string
+                  enum: [Pending, Scheduled, Active, Expired, Paused, Error]
+                message: { type: string }
+                observedGeneration: { type: integer, format: int64 }
+                lastTransitionTime: { type: string, format: date-time }

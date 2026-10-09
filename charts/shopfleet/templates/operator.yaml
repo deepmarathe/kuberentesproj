@@ -1,0 +1,108 @@
+{{- if .Values.operator.enabled }}
+# ---------------------------------------------------------------------------
+# FlashSale operator: watches FlashSale custom resources (crd-flashsale.yaml) and
+# applies/removes discounts in catalog. 2 replicas + Lease-based leader election:
+# only one acts at a time; kill the leader and the other takes over within ~15s.
+#   kubectl -n shopfleet get lease flashsale-operator -o yaml   # who's the leader?
+# ---------------------------------------------------------------------------
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: flashsale-operator
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: flashsale-operator
+rules:
+  - apiGroups: ["shopfleet.io"]
+    resources: ["flashsales"]
+    verbs: ["get", "list", "watch", "patch", "update"]   # patch = add/remove finalizer
+  - apiGroups: ["shopfleet.io"]
+    resources: ["flashsales/status"]                      # status SUBRESOURCE
+    verbs: ["get", "patch", "update"]
+  - apiGroups: [""]
+    resources: ["events"]
+    verbs: ["create", "patch"]
+  - apiGroups: ["coordination.k8s.io"]
+    resources: ["leases"]
+    verbs: ["get", "create", "update"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: flashsale-operator
+subjects:
+  - { kind: ServiceAccount, name: flashsale-operator, namespace: {{ .Release.Namespace }} }
+roleRef: { apiGroup: rbac.authorization.k8s.io, kind: Role, name: flashsale-operator }
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: flashsale-operator
+  labels: { app: flashsale-operator }
+spec:
+  replicas: {{ .Values.operator.replicas }}
+  selector:
+    matchLabels: { app: flashsale-operator }
+  template:
+    metadata:
+      labels:
+        app: flashsale-operator
+        tier: app
+        shopfleet.io/metrics-port: metrics
+        shopfleet.io/chaos: "allowed"
+    spec:
+      serviceAccountName: flashsale-operator
+      {{- include "shopfleet.imagePullSecrets" . | nindent 6 }}
+      priorityClassName: shopfleet-standard
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 10001
+        runAsGroup: 10001
+        seccompProfile: { type: RuntimeDefault }
+      affinity:
+        # Two replicas on the same node defeats the point of HA -> require different nodes.
+        podAntiAffinity:
+          preferredDuringSchedulingIgnoredDuringExecution:
+            - weight: 100
+              podAffinityTerm:
+                topologyKey: kubernetes.io/hostname
+                labelSelector: { matchLabels: { app: flashsale-operator } }
+      containers:
+        - name: operator
+          image: {{ include "shopfleet.image" (dict "root" $ "name" "operator") }}
+          ports:
+            - { name: metrics, containerPort: 8080 }
+          env:
+            - name: POD_NAME
+              valueFrom: { fieldRef: { fieldPath: metadata.name } }
+            - name: WATCH_NAMESPACE
+              valueFrom: { fieldRef: { fieldPath: metadata.namespace } }
+            - { name: RESYNC_SECONDS, value: {{ .Values.operator.resyncSeconds | quote }} }
+            - name: CATALOG_URL
+              valueFrom: { configMapKeyRef: { name: shopfleet-config, key: CATALOG_URL } }
+          resources:
+            requests: { cpu: 25m, memory: 64Mi }
+            limits: { memory: 128Mi }
+          livenessProbe:
+            httpGet: { path: /metrics, port: metrics }
+            periodSeconds: 20
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities: { drop: ["ALL"] }
+          volumeMounts:
+            - { name: tmp, mountPath: /tmp }
+      volumes:
+        - { name: tmp, emptyDir: {} }
+---
+apiVersion: policy/v1
+kind: PodDisruptionBudget
+metadata:
+  name: flashsale-operator
+spec:
+  maxUnavailable: 1
+  selector:
+    matchLabels: { app: flashsale-operator }
+{{- end }}

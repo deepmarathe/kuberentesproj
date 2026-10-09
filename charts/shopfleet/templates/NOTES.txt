@@ -1,0 +1,23 @@
+🛳️  ShopFleet {{ .Chart.AppVersion }} installed as release "{{ .Release.Name }}" in namespace "{{ .Release.Namespace }}" (revision {{ .Release.Revision }}).
+
+Watch it come up:
+  kubectl -n {{ .Release.Namespace }} get pods -w
+  helm test {{ .Release.Name }} -n {{ .Release.Namespace }}        # smoke test once pods are Ready
+
+Open the store:
+{{- if .Values.ingress.enabled }}
+  via Ingress ({{ .Values.ingress.className | default "default class" }}):  kubectl -n {{ .Release.Namespace }} get ingress shopfleet
+{{- else if .Values.gateway.enabled }}
+  via Gateway API:  kubectl -n {{ .Release.Namespace }} get gateway,httproute
+{{- else }}
+  kubectl -n {{ .Release.Namespace }} port-forward svc/frontend 8080:8080   ->  http://localhost:8080
+{{- end }}
+
+Admin login (Admin + Cluster pages):
+  kubectl -n {{ .Release.Namespace }} get secret admin-credentials -o jsonpath='{.data.email}' | base64 -d; echo
+  kubectl -n {{ .Release.Namespace }} get secret admin-credentials -o jsonpath='{.data.password}' | base64 -d; echo
+
+Try a FlashSale (custom resource):
+  kubectl -n {{ .Release.Namespace }} apply -f k8s/examples/flashsale.yaml && kubectl -n {{ .Release.Namespace }} get fs -w
+
+Practice for CKA/CKAD:  ./exam/trainer list

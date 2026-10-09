@@ -1,0 +1,101 @@
+# GKE overlay. scripts/deploy.sh renders this and replaces the __PLACEHOLDERS__:
+#   __REGISTRY__   -> REGION-docker.pkg.dev/PROJECT_ID/shopfleet
+#   __TAG__        -> image tag that was built
+#   __PROJECT_ID__ -> your project id
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+
+resources:
+  - ../../base
+  - ingress.yaml
+  - backendconfigs.yaml
+  - podmonitoring.yaml
+
+images:
+  - { name: shopfleet/frontend,  newName: __REGISTRY__/frontend,  newTag: __TAG__ }
+  - { name: shopfleet/catalog,   newName: __REGISTRY__/catalog,   newTag: __TAG__ }
+  - { name: shopfleet/cart,      newName: __REGISTRY__/cart,      newTag: __TAG__ }
+  - { name: shopfleet/orders,    newName: __REGISTRY__/orders,    newTag: __TAG__ }
+  - { name: shopfleet/payment,   newName: __REGISTRY__/payment,   newTag: __TAG__ }
+  - { name: shopfleet/worker,    newName: __REGISTRY__/worker,    newTag: __TAG__ }
+  - { name: shopfleet/dbmigrate, newName: __REGISTRY__/dbmigrate, newTag: __TAG__ }
+  - { name: shopfleet/loadgen,   newName: __REGISTRY__/loadgen,   newTag: __TAG__ }
+  - { name: shopfleet/auth,          newName: __REGISTRY__/auth,          newTag: __TAG__ }
+  - { name: shopfleet/notifications, newName: __REGISTRY__/notifications, newTag: __TAG__ }
+  - { name: shopfleet/ops-api,       newName: __REGISTRY__/ops-api,       newTag: __TAG__ }
+  - { name: shopfleet/operator,      newName: __REGISTRY__/operator,      newTag: __TAG__ }
+  - { name: shopfleet/node-agent,    newName: __REGISTRY__/node-agent,    newTag: __TAG__ }
+
+configMapGenerator:
+  - name: shopfleet-config
+    namespace: shopfleet
+    behavior: merge
+    literals:
+      - REPORT_BUCKET=__PROJECT_ID__-shopfleet-reports
+
+patches:
+  # Workload Identity: this Kubernetes SA acts as the Google SA created by Terraform.
+  - target: { kind: ServiceAccount, name: reports }
+    patch: |-
+      - op: add
+        path: /metadata/annotations
+        value:
+          iam.gke.io/gcp-service-account: shopfleet-reports@__PROJECT_ID__.iam.gserviceaccount.com
+
+  # Container-native load balancing (NEGs) + per-service health check / draining settings.
+  - target: { kind: Service, name: frontend }
+    patch: |-
+      - op: add
+        path: /metadata/annotations
+        value:
+          cloud.google.com/neg: '{"ingress": true}'
+          cloud.google.com/backend-config: '{"default": "frontend"}'
+  - target: { kind: Service, name: catalog }
+    patch: |-
+      - op: add
+        path: /metadata/annotations
+        value:
+          cloud.google.com/neg: '{"ingress": true}'
+          cloud.google.com/backend-config: '{"default": "api"}'
+  - target: { kind: Service, name: cart }
+    patch: |-
+      - op: add
+        path: /metadata/annotations
+        value:
+          cloud.google.com/neg: '{"ingress": true}'
+          cloud.google.com/backend-config: '{"default": "api"}'
+  - target: { kind: Service, name: orders }
+    patch: |-
+      - op: add
+        path: /metadata/annotations
+        value:
+          cloud.google.com/neg: '{"ingress": true}'
+          cloud.google.com/backend-config: '{"default": "api"}'
+
+  - target: { kind: Service, name: auth }
+    patch: |-
+      - op: add
+        path: /metadata/annotations
+        value:
+          cloud.google.com/neg: '{"ingress": true}'
+          cloud.google.com/backend-config: '{"default": "api"}'
+  - target: { kind: Service, name: ops-api }
+    patch: |-
+      - op: add
+        path: /metadata/annotations
+        value:
+          cloud.google.com/neg: '{"ingress": true}'
+          cloud.google.com/backend-config: '{"default": "api"}'
+  - target: { kind: Service, name: notifications }
+    patch: |-
+      - op: add
+        path: /metadata/annotations
+        value:
+          cloud.google.com/neg: '{"ingress": true}'
+          cloud.google.com/backend-config: '{"default": "stream"}'
+
+  # Interruptible workloads prefer the cheap Spot node pool (and tolerate its taint).
+  - path: spot-placement.yaml
+    target: { kind: Deployment, name: worker }
+  - path: spot-placement.yaml
+    target: { kind: Deployment, name: loadgen }

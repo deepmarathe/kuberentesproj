@@ -1,0 +1,29 @@
+# `helm test shopfleet -n shopfleet` runs this pod and reports pass/fail.
+apiVersion: v1
+kind: Pod
+metadata:
+  name: shopfleet-smoke-test
+  labels:
+    app: smoke-test
+    shopfleet.io/db-client: "false"
+  annotations:
+    "helm.sh/hook": test
+    "helm.sh/hook-delete-policy": before-hook-creation,hook-succeeded
+spec:
+  restartPolicy: Never
+  {{- include "shopfleet.podSecurity" 10001 | nindent 2 }}
+  containers:
+    - name: smoke
+      image: busybox:1.36
+      command:
+        - sh
+        - -c
+        - |
+          set -e
+          for url in frontend:8080/healthz catalog:8080/readyz cart:8080/readyz orders:8080/readyz auth:8080/readyz \
+                     catalog:8080/api/catalog/categories; do
+            echo "checking http://$url"; wget -q -T 5 -O - "http://$url" > /dev/null
+          done
+          echo "all smoke checks passed"
+      resources: { requests: { cpu: 10m, memory: 16Mi }, limits: { memory: 32Mi } }
+      {{- include "shopfleet.containerSecurity" . | nindent 6 }}

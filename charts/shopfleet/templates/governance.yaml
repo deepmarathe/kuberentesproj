@@ -1,0 +1,39 @@
+{{- if .Values.governance.quota.enabled }}
+apiVersion: v1
+kind: ResourceQuota
+metadata:
+  name: shopfleet-quota
+  labels: {{- include "shopfleet.labels" . | nindent 4 }}
+spec:
+  hard:
+    requests.cpu: {{ .Values.governance.quota.cpu | quote }}
+    requests.memory: {{ .Values.governance.quota.memory }}
+    limits.memory: {{ .Values.governance.quota.limitsMemory }}
+    pods: {{ .Values.governance.quota.pods | quote }}
+{{- end }}
+{{- if .Values.governance.limitRange.enabled }}
+---
+apiVersion: v1
+kind: LimitRange
+metadata:
+  name: shopfleet-defaults
+  labels: {{- include "shopfleet.labels" . | nindent 4 }}
+spec:
+  limits:
+    - type: Container
+      defaultRequest: { cpu: 50m, memory: 64Mi }
+      default: { memory: 256Mi }
+      max: { memory: 2Gi }
+{{- end }}
+{{- if .Values.priorityClasses.create }}
+{{- range $name, $pc := dict "shopfleet-critical" (list 100000 "PreemptLowerPriority") "shopfleet-standard" (list 10000 "PreemptLowerPriority") "shopfleet-low" (list 100 "Never") }}
+---
+apiVersion: scheduling.k8s.io/v1
+kind: PriorityClass
+metadata:
+  name: {{ $name }}
+  labels: {{- include "shopfleet.labels" $ | nindent 4 }}
+value: {{ index $pc 0 }}
+preemptionPolicy: {{ index $pc 1 }}
+{{- end }}
+{{- end }}

@@ -1,0 +1,7 @@
+{
+  "failure_rate": 0.0,
+  "decline_rate": 0.03,
+  "latency_ms": 80,
+  "jitter_ms": 120,
+  "hang_rate": 0.0
+}

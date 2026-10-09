@@ -1,0 +1,24 @@
+- op: add
+  path: /spec/template/spec/initContainers
+  value:
+    - name: cloud-sql-proxy
+      image: gcr.io/cloud-sql-connectors/cloud-sql-proxy:2.14.1
+      restartPolicy: Always            # <- this makes it a native sidecar (K8s 1.29+)
+      args:
+        - --port=5432
+        - --structured-logs
+        - --health-check
+        - --http-address=0.0.0.0
+        - __SQL_INSTANCE__
+      startupProbe:
+        httpGet: { path: /startup, port: 9090 }
+        periodSeconds: 1
+        failureThreshold: 30
+      resources:
+        requests: { cpu: 20m, memory: 32Mi }
+        limits: { memory: 128Mi }
+      securityContext:
+        runAsNonRoot: true
+        allowPrivilegeEscalation: false
+        readOnlyRootFilesystem: true
+        capabilities: { drop: ["ALL"] }

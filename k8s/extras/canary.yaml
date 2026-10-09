@@ -1,0 +1,68 @@
+# Lab 04: canary release of catalog.
+# A second Deployment ("track: canary") with a NEW image tag. Because it carries label app=catalog,
+# the existing `catalog` Service sends it a share of traffic proportional to replica count
+# (2 stable + 1 canary = ~33%). The `catalog-canary` Service is for Gateway API weighted splits.
+# Fill in the new image and the CURRENT (hash-suffixed) ConfigMap name -- see docs/labs/04-rollouts-and-rollbacks.md
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: catalog-canary
+  namespace: shopfleet
+  labels: { app: catalog, track: canary }
+spec:
+  replicas: 1
+  selector:
+    matchLabels: { app: catalog, track: canary }
+  template:
+    metadata:
+      labels:
+        app: catalog
+        track: canary
+        tier: app
+        shopfleet.io/metrics-port: http
+        shopfleet.io/db-client: "true"
+        shopfleet.io/redis-client: "true"
+    spec:
+      serviceAccountName: catalog
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 10001
+        runAsGroup: 10001
+        seccompProfile: { type: RuntimeDefault }
+      containers:
+        - name: catalog
+          image: __IMAGE__
+          ports: [{ name: http, containerPort: 8080 }]
+          envFrom:
+            - configMapRef: { name: __CONFIGMAP__ }   # kustomize adds a hash suffix, so we look it up
+          env:
+            - name: POD_NAME
+              valueFrom: { fieldRef: { fieldPath: metadata.name } }
+            - name: APP_VERSION
+              value: canary
+            - name: DB_USER
+              valueFrom: { secretKeyRef: { name: postgres-credentials, key: DB_USER } }
+            - name: DB_PASSWORD
+              valueFrom: { secretKeyRef: { name: postgres-credentials, key: DB_PASSWORD } }
+          resources:
+            requests: { cpu: 100m, memory: 192Mi }
+            limits: { memory: 384Mi }
+          readinessProbe:
+            httpGet: { path: /readyz, port: http }
+          livenessProbe:
+            httpGet: { path: /healthz, port: http }
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities: { drop: ["ALL"] }
+          volumeMounts: [{ name: tmp, mountPath: /tmp }]
+      volumes: [{ name: tmp, emptyDir: {} }]
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: catalog-canary
+  namespace: shopfleet
+spec:
+  selector: { app: catalog, track: canary }
+  ports: [{ name: http, port: 8080, targetPort: 8080 }]

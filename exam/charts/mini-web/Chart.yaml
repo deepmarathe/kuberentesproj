@@ -1,0 +1,6 @@
+apiVersion: v2
+name: mini-web
+description: Tiny practice chart for Helm exam tasks (Deployment + Service)
+type: application
+version: 0.1.0
+appVersion: "1.26-alpine"

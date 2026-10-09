@@ -1,0 +1,45 @@
+{
+  "$schema": "https://json-schema.org/draft-07/schema#",
+  "title": "ShopFleet values",
+  "type": "object",
+  "required": ["image", "apps"],
+  "properties": {
+    "image": {
+      "type": "object",
+      "required": ["registry"],
+      "properties": {
+        "registry": { "type": "string", "minLength": 1 },
+        "tag": { "type": "string" },
+        "pullPolicy": { "type": "string", "enum": ["Always", "IfNotPresent", "Never"] }
+      }
+    },
+    "imagePullSecrets": { "type": "array", "items": { "type": "object", "required": ["name"] } },
+    "apps": {
+      "type": "object",
+      "additionalProperties": {
+        "type": "object",
+        "required": ["resources"],
+        "properties": {
+          "replicas": { "type": "integer", "minimum": 0, "maximum": 20 },
+          "hpa": {
+            "type": "object",
+            "properties": {
+              "enabled": { "type": "boolean" },
+              "min": { "type": "integer", "minimum": 1 },
+              "max": { "type": "integer", "minimum": 1 },
+              "cpu": { "type": "integer", "minimum": 1, "maximum": 100 }
+            }
+          }
+        }
+      }
+    },
+    "loadgen": {
+      "type": "object",
+      "properties": { "maxUsers": { "type": "integer", "minimum": 0, "maximum": 500 } }
+    },
+    "ingress": {
+      "type": "object",
+      "properties": { "enabled": { "type": "boolean" }, "className": { "type": "string" }, "host": { "type": "string" } }
+    }
+  }
+}

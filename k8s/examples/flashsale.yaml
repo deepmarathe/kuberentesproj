@@ -1,0 +1,12 @@
+# Try:  kubectl apply -f k8s/examples/flashsale.yaml && kubectl -n shopfleet get fs -w
+# Then open the store: Books are 30% off. Delete it and the discount disappears (finalizer!).
+apiVersion: shopfleet.io/v1alpha1
+kind: FlashSale
+metadata:
+  name: book-week
+  namespace: shopfleet
+spec:
+  title: "Book Week: 30% off everything to read"
+  category: Books
+  discountPercent: 30
+  endsAt: "2030-01-01T00:00:00Z"
